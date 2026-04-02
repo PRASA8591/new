@@ -4,10 +4,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
     <title>PSS - Stock System | Secure Access</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
+        html { visibility: hidden; opacity: 0; }
+        html.tw-ready { visibility: visible; opacity: 1; transition: opacity 0.3s ease; }
         body {
             font-family: 'Plus Jakarta Sans', sans-serif;
             background-color: #f3f5f9;
@@ -119,12 +124,8 @@
 
     <div class="login-card">
         <div class="logo-box">
-             <!-- PSS System Logo SVG -->
-             <svg width="60" height="60" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" class="mb-4">
-                <path d="M20 30C20 24.4772 24.4772 20 30 20H70C75.5228 20 80 24.4772 80 30V45C80 50.5228 75.5228 55 70 55H30V80" stroke="#009e60" stroke-width="12" stroke-linecap="round"/>
-                <path d="M45 40L65 40C70.5228 40 75 44.4772 75 50V65C75 70.5228 70.5228 75 65 75H35" stroke="#3b82f6" stroke-width="8" stroke-linecap="round"/>
-                <circle cx="28" cy="28" r="4" fill="#60a5fa"/>
-             </svg>
+             <!-- Corporate Logo -->
+             <img src="logo.png" alt="PSS Logo" class="h-20 mx-auto mb-4 object-contain drop-shadow-md">
              <div class="text-[10px] font-extrabold text-[#64748b] tracking-[0.2em] uppercase mb-1">Prasatek System Solutions</div>
              <h1 class="text-3xl font-black text-[#1e293b] tracking-tight mb-6">PSS - Stock <span class="text-[#009e60]">System</span></h1>
              
@@ -195,8 +196,8 @@
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
 
-        // Constants matching Main App
-        const ALL_PAGES = ["dashboard", "stock_check", "items", "suppliers", "locations", "users", "direct_add", "po", "grn", "prn", "transfer_out", "transfer_in", "verification", "bincard", "billing", "reports", "restock", "bulk_update", "settings", "company", "po_approve"];
+        // Constants matching Main App (Page IDs)
+        const ALL_PAGES = ["dashboard", "stock_check", "items", "suppliers", "locations", "users", "direct_add", "po", "grn", "prn", "transfer_out", "transfer_in", "verification", "bincard", "billing", "reports", "restock", "settings", "company", "live_video"];
 
         async function init() {
             try {
@@ -293,12 +294,24 @@
                 const locData = locSnap.docs[0].data();
 
                 // Compute Final Permissions (Intersection of User & Location)
-                // User said "location only have option selected pages... user permissions... tick only that"
-                // So effective permissions = UserPermissions AND LocationPages
-                const userPerms = userData.username === 'admin' ? ALL_PAGES : userData.permissions;
+                // User permissions consist of both Page IDs and Functional Permissions.
+                // We only filter Page IDs (ones from ALL_PAGES) based on Location access.
+                const userPerms = userData.username === 'admin' ? ALL_PAGES : (userData.permissions || []);
                 const locPerms = locData.pages || [];
 
-                const finalPerms = userPerms.filter(page => locPerms.includes(page));
+                // Page IDs are in ALL_PAGES. Functional perms might not be.
+                // Or rather, everything in userData.permissions that is a 'page' must be in locPerms.
+                // But functional perms like 'po_approve' should stay if the user has them.
+                
+                const finalPerms = userPerms.filter(p => {
+                    // If it's a page ID, it must be in locPerms.
+                    // If it's a functional perm, we keep it.
+                    // Note: In this system, 'po_approve' was also in ALL_PAGES but not in loc wizard.
+                    // To be safe, we allow 'po_approve' and other functional perms to pass through.
+                    const isPage = ALL_PAGES.includes(p);
+                    if (isPage) return locPerms.includes(p);
+                    return true; // Keep functional perms
+                });
 
                 if (finalPerms.length === 0 && userData.username !== 'admin') {
                     throw new Error("No active page permissions for this location.");
@@ -334,8 +347,11 @@
         }
 
         document.getElementById('loginForm').onsubmit = handleLogin;
-        init();
+        init(); // Core initialization
+        
+        // Performance: Reveal page only after fonts & styles are likely ready
+        window.onload = () => { document.documentElement.classList.add('tw-ready'); };
+        setTimeout(() => { document.documentElement.classList.add('tw-ready'); }, 1000); 
     </script>
 </body>
-
 </html>
