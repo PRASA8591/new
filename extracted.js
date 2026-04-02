@@ -1,0 +1,4153 @@
+
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, collection, getDocs, addDoc, doc, updateDoc, deleteDoc, query, where, getDoc, limit, orderBy, writeBatch, serverTimestamp, setDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+        // --- CONFIG ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyDNpEbBt638KQGgkD4EvtqrRvInupP55zM",
+            authDomain: "bills-de7ee.firebaseapp.com",
+            projectId: "bills-de7ee",
+            storageBucket: "bills-de7ee.firebasestorage.app",
+            messagingSenderId: "970664008722",
+            appId: "1:970664008722:web:d84829f233a6d40f6bcccb",
+            measurementId: "G-WHSRHW81E0"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        // --- SESSION ---
+        const session = JSON.parse(sessionStorage.getItem('ims_session'));
+        if (!session) window.location.href = 'index.html';
+
+        document.getElementById('disp-user').innerText = session.user;
+        document.getElementById('disp-loc').innerText = session.loc;
+
+        // --- UTILS ---
+        window.formatCurrency = (n) => 'Rs ' + parseFloat(n || 0).toFixed(2);
+        window.formatDate = (d) => new Date(d).toLocaleDateString();
+        window.filterTable = (id, col) => {
+            const q = document.getElementById('search-item')?.value.toLowerCase() || "";
+            const rows = document.getElementById(id).getElementsByTagName("tr");
+            for (let i = 1; i < rows.length; i++) {
+                const txt = rows[i].getElementsByTagName("td")[col].innerText.toLowerCase();
+                rows[i].style.display = txt.includes(q) ? "" : "none";
+            }
+        };
+
+        // --- NAVIGATION ---
+        const PAGES = [
+            { id: 'billing', n: 'Billing POS', icon: '💳' },
+            { id: 'dashboard', n: 'Dashboard', icon: '📊' },
+            { id: 'stock_check', n: 'Stock Check', icon: '🔍' },
+            { id: 'items', n: 'Item Master', icon: '📦' },
+            { id: 'suppliers', n: 'Suppliers', icon: '🚛' },
+            { id: 'locations', n: 'Locations', icon: '🏢' },
+            { id: 'users', n: 'Users', icon: '👥' },
+            { id: 'direct_add', n: 'Direct Stock', icon: '➕' },
+            { id: 'po', n: 'Purchase Orders', icon: '📝' },
+            { id: 'grn', n: 'GRN Receive', icon: '📥' },
+            { id: 'prn', n: 'Purchase Returns', icon: '🔙' },
+            { id: 'transfer_out', n: 'Transfer Out', icon: '🛫' },
+            { id: 'transfer_in', n: 'Transfer In', icon: '🛬' },
+            { id: 'verification', n: 'Audit / Adjust', icon: '⚖️' },
+            { id: 'bincard', n: 'Bin Card', icon: '📋' },
+            { id: 'reports', n: 'Reports', icon: '📈' },
+            { id: 'restock', n: 'Restock List', icon: '📋' },
+            { id: 'bulk_update', n: 'Bulk Update', icon: '🛠️', advanced: true },
+            { id: 'settings', n: 'System Settings', icon: '⚙️' },
+            { id: 'company', n: 'Company Info', icon: '🏢' },
+            { id: 'live_video', n: 'Live Video', icon: '🎥' },
+            { id: 'po_approve', n: 'PO Authorization', icon: '✅', advanced: true }
+        ];
+
+        function initNav() {
+            const nav = document.getElementById('nav-list');
+            const allowed = session.perms || [];
+
+            let html = '';
+            PAGES.forEach(p => {
+                if ((session.isAdmin || allowed.includes(p.id)) && !p.advanced) {
+                    html += `
+                        <div onclick="loadPage('${p.id}')" class="nav-item group flex items-center gap-3 px-3 py-3 rounded-xl cursor-pointer hover:bg-blue-600/10 hover:text-blue-400 transition-all mb-1 border-l-4 border-transparent hover:border-blue-500" id="nav-${p.id}">
+                            <span class="text-xl group-hover:scale-110 transition nav-icon">${p.icon}</span>
+                            <span class="font-bold text-sm tracking-wide nav-text">${p.n}</span>
+                        </div>`;
+                }
+            });
+            nav.innerHTML = html;
+            loadPage('dashboard');
+        }
+
+        // --- CORE UI FUNCTIONS ---
+        window.toggleSidebar = () => document.getElementById('sidebar').classList.toggle('collapsed');
+        window.logout = () => window.confirmAction('Are you sure you want to log out?', 'logoutExec');
+        window.logoutExec = () => {
+            sessionStorage.clear();
+            window.location.href = 'index.html';
+        };
+
+        window.openModal = (title, body, footerHtml = null) => {
+            document.getElementById('m-title').innerText = title;
+            document.getElementById('m-body').innerHTML = body;
+            document.getElementById('m-footer').innerHTML = footerHtml || `<button onclick="closeModal()" class="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-bold hover:bg-slate-300">Close</button>`;
+
+            const m = document.getElementById('modal');
+            m.classList.remove('hidden');
+            // Small delay to allow display:block to apply before opacity transition
+            setTimeout(() => {
+                m.classList.remove('opacity-0');
+                document.getElementById('modal-panel').classList.remove('scale-95');
+            }, 10);
+        };
+
+        window.closeModal = () => {
+            const m = document.getElementById('modal');
+            m.classList.add('opacity-0');
+            document.getElementById('modal-panel').classList.add('scale-95');
+            setTimeout(() => m.classList.add('hidden'), 200);
+        };
+
+        window.showCreatedDoc = (id, type) => {
+            window.openModal(
+                "✅ Strategic Log: Entry Committed",
+                `<div class="text-center py-10">
+                    <div class="text-7xl mb-6 drop-shadow-2xl">📄</div>
+                    <h3 class="text-2xl font-black text-slate-800 mb-2 uppercase tracking-tight">${type} SECURED</h3>
+                    <div class="bg-indigo-50 p-5 rounded-3xl border-2 border-indigo-100 inline-block font-mono font-black text-indigo-600 text-2xl mb-6 tracking-tighter uppercase whitespace-nowrap px-10 shadow-inner">${id}</div>
+                    <div class="max-w-sm mx-auto">
+                        <p class="text-slate-400 text-xs font-bold leading-relaxed uppercase tracking-widest">
+                            The document has been successfully serialized and committed to the distributed ledger. 
+                            Global synchronisation complete.
+                        </p>
+                    </div>
+                </div>`,
+                `<button onclick="closeModal()" class="w-full bg-slate-900 text-white p-5 rounded-3xl font-black text-[11px] uppercase tracking-[0.3em] hover:bg-indigo-600 transition-all shadow-2xl active:scale-95">Operational Continuity</button>`
+            );
+        };
+
+        window.confirmAction = (msg, callbackName, ...args) => {
+            const safeArgs = args.map(a => typeof a === 'string' ? `'${a}'` : a).join(',');
+            window.openModal(
+                "⚠️ Confirmation",
+                `<div class="text-center py-8">
+                    <div class="text-5xl mb-4">❓</div>
+                    <h3 class="text-xl font-bold text-slate-800 mb-2">${msg}</h3>
+                    <p class="text-slate-500 text-sm">This action cannot be undone.</p>
+                </div>`,
+                `<button onclick="closeModal()" class="px-6 py-2 rounded-lg font-bold text-slate-600 hover:bg-slate-100">Cancel</button>
+                 <button onclick="closeModal(); ${callbackName}(${safeArgs})" class="px-6 py-2 rounded-lg font-bold bg-black text-white hover:bg-slate-800 shadow-lg">Confirm</button>`
+            );
+        };
+
+        // --- ID GENERATOR ---
+        async function generateID(prefix, col) {
+            // Simple counter based ID - in production use distributed counters or uuids
+            // Here we just count docs to keep it simple as requested (ITEM000001)
+            const snap = await getDocs(collection(db, col));
+            const count = snap.size + 1;
+            return prefix + count.toString().padStart(6, '0');
+        }
+
+        // --- HISTORY LOGGER ---
+        async function logHistory(itemCode, type, qty, docNo = '-', fromLoc = '-', toLoc = '-') {
+            await addDoc(collection(db, "history"), {
+                date: new Date().toISOString(),
+                itemCode, type, qty,
+                user: session.user,
+                loc: session.loc,
+                docNo, fromLoc, toLoc
+            });
+        }
+
+        // --- PRINTER UTILS ---
+        window.printDoc = async (title, metaHtml, tableHtml) => {
+            const snap = await getDoc(doc(db, "settings", "company"));
+            const c = snap.exists() ? snap.data() : { name: 'IMS ELITE', addr: '', tel: '' };
+
+            const w = window.open('', '', 'width=900,height=800');
+            w.document.write(`
+                <html><head><title>${title}</title>
+                <style>
+                    body{font-family:'Segoe UI',sans-serif;padding:40px;color:#000;line-height:1.5}
+                    .header{text-align:center;border-bottom:3px solid #000;padding-bottom:20px;margin-bottom:30px}
+                    .co-name{font-size:48px;font-weight:900;text-transform:uppercase;margin:0;letter-spacing:-2px}
+                    .co-info{font-size:14px;font-weight:600;color:#555;margin:5px 0}
+                    .doc-title{font-size:24px;font-weight:800;margin-top:15px;color:#000;background:#f8fafc;padding:8px 20px;display:inline-block;text-transform:uppercase;border-radius:10px}
+                    .meta{display:flex;justify-content:space-between;margin-bottom:30px;font-size:13px;border:1px solid #eee;padding:15px;background:#fafafa}
+                    table{width:100%;border-collapse:collapse;font-size:12px}
+                    th{background:#f1f5f9;padding:12px;text-align:left;border:1px solid #cbd5e1;font-weight:800;text-transform:uppercase}
+                    td{padding:10px;border:1px solid #e2e8f0}
+                    .footer{margin-top:50px;text-align:center;font-size:10px;color:#94a3b8;border-top:1px dashed #cbd5e1;padding-top:20px}
+                </style>
+                </head><body>
+                    <div class="header" style="display:flex; align-items:center; gap:20px; justify-content:center; border-bottom:3px solid #000; padding-bottom:20px; margin-bottom:30px">
+                        <img src="logo.png" style="height:60px; object-fit:contain;">
+                        <div style="text-align:left;">
+                            <div class="co-name" style="border:none; margin:0; padding:0;">${c.name}</div>
+                            <div class="co-info">${c.addr} | Tel: ${c.tel}</div>
+                        </div>
+                    </div>
+                    <div style="text-align:center;"><div class="doc-title">${title}</div></div>
+                    <div class="meta">${metaHtml}</div>
+                    <table>${tableHtml}</table>
+                    <div class="footer">Document Generated by IMS ELITE | ${new Date().toLocaleString()} | User: ${session.user}</div>
+                </body></html>
+            `);
+            w.document.close();
+            w.focus();
+            setTimeout(() => { w.print(); }, 1000);
+        };
+
+        // --- PAGE LOADER ---
+        window.loadPage = async (pageId) => {
+            const p = PAGES.find(x => x.id === pageId);
+            if (!p) return;
+
+            // UI Update
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('bg-blue-600/10', 'text-blue-400', 'border-blue-500'));
+            const activeNav = document.getElementById('nav-' + pageId);
+            if (activeNav) activeNav.classList.add('bg-blue-600/10', 'text-blue-400', 'border-blue-500');
+
+            document.getElementById('page-title').innerText = p.n;
+            document.getElementById('app').innerHTML = `<div class="flex items-center justify-center h-64"><div class="animate-spin text-4xl">💠</div></div>`;
+
+            // Route
+            if (pageId === 'dashboard') await loadDashboard();
+            else if (pageId === 'items') await loadItems();
+            else if (pageId === 'stock_check') await loadStockCheck();
+            else if (pageId === 'suppliers') await loadSuppliers();
+            else if (pageId === 'locations') await loadLocations();
+            else if (pageId === 'users') await loadUsers();
+            else if (pageId === 'direct_add') await loadDirectAdd();
+            else if (pageId === 'po') await loadPO();
+            else if (pageId === 'grn') await loadGRN();
+            else if (pageId === 'prn') await loadPRN();
+            else if (pageId === 'transfer_out') await loadTransferOut();
+            else if (pageId === 'transfer_in') await loadTransferIn();
+            else if (pageId === 'verification') await loadVerification();
+            else if (pageId === 'bincard') await loadBincard();
+            else if (pageId === 'billing') await loadBilling();
+            else if (pageId === 'reports') await loadReports();
+            else if (pageId === 'restock') await loadRestockList();
+            else if (pageId === 'bulk_update') await loadBulkUpdate();
+            else if (pageId === 'settings') await loadSettings();
+            else if (pageId === 'company') await loadCompany();
+            else if (pageId === 'live_video') await loadLiveVideo();
+
+            // Reveal application once first page loads
+            document.documentElement.classList.add('tw-ready');
+        };
+
+        // ==========================================================================================
+        // === MODULES PLACEHOLDERS ===
+        // ==========================================================================================
+
+
+        // === 1. DASHBOARD ===
+        async function loadDashboard() {
+            const loading = `<div class="animate-pulse flex space-x-4"><div class="h-12 w-full bg-slate-200 rounded"></div></div>`;
+            document.getElementById('app').innerHTML = `<div class="grid grid-cols-1 md:grid-cols-4 gap-6" id="dash-grid">${loading}</div>`;
+
+            // Fetch Data
+            const stocksSnap = await getDocs(query(collection(db, "stocks"), where("loc", "==", session.loc)));
+            const itemsSnap = await getDocs(collection(db, "items"));
+
+            const stocks = stocksSnap.docs.map(d => d.data());
+            const items = itemsSnap.docs.map(d => d.data());
+
+            let val = 0, exp = 0, low = 0, short = 0;
+            const now = new Date();
+            const warningDate = new Date();
+            warningDate.setMonth(warningDate.getMonth() + 6); // 6 Months Warning
+
+            // 1. Calculate Per Item Total Qty for Low Stock
+            const itemTotals = {};
+            stocks.forEach(s => {
+                const item = items.find(i => i.code === s.itemCode);
+
+                // Value
+                if (item) val += (s.qty * (item.cost || 0));
+
+                // Expiry Logic (Batch-wise)
+                if (s.exp && s.exp.includes('-')) {
+                    const d = new Date(s.exp);
+                    if (d < now && s.qty > 0) exp++;
+                    else if (d < warningDate && s.qty > 0) short++;
+                }
+
+                // Aggregate for Low Stock
+                if (!itemTotals[s.itemCode]) itemTotals[s.itemCode] = 0;
+                itemTotals[s.itemCode] += s.qty;
+            });
+
+            // 2. Check Low Stock (Total Qty < Min Level)
+            items.forEach(i => {
+                const total = itemTotals[i.code] || 0;
+                // Default min level is 10 if not set
+                const min = i.minLevel || 10;
+                if (total < min) low++;
+            });
+
+            const cards = [
+                { l: 'Stock Value', v: formatCurrency(val), c: 'blue', fn: 'val' },
+                { l: 'Expired Items', v: exp, c: 'red', fn: 'exp' },
+                { l: 'Short Expiry (6 Months)', v: short, c: 'orange', fn: 'short' },
+                { l: 'Low Stock Alerts', v: low, c: 'yellow', fn: 'low' }
+            ];
+
+            // State for detail drilling
+            window.dashData = { stocks, items };
+
+            const html = cards.map(c => `
+                <div onclick="showDashDetail('${c.fn}')" class="card p-6 border border-slate-200 shadow-sm hover:shadow-md hover:border-blue-300 transition-all cursor-pointer group active:scale-95">
+                    <div class="flex justify-between items-center mb-4">
+                        <div class="w-10 h-10 bg-${c.c}-50 rounded-xl flex items-center justify-center text-xl group-hover:scale-110 transition">
+                            ${c.fn === 'val' ? '💰' : c.fn === 'exp' ? '⚠️' : '🔔'}
+                        </div>
+                        <span class="text-[10px] font-black uppercase text-slate-400 tracking-widest">${c.l}</span>
+                    </div>
+                    <div class="text-2xl font-black text-slate-800">${c.v}</div>
+                    <div class="text-[9px] text-slate-300 font-bold mt-2 uppercase tracking-tighter group-hover:text-blue-500 transition">Click for Details →</div>
+                </div>`).join('');
+
+            document.getElementById('dash-grid').innerHTML = html;
+
+            // --- ADVANCED TOOL: Trend & Distribution Charts ---
+            const chartHtml = `
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
+                    <div class="col-span-2 card p-6 border border-slate-200">
+                        <h3 class="font-bold text-slate-700 mb-4 uppercase text-[10px] tracking-widest">Global Transaction Trend</h3>
+                        <canvas id="stockChart" height="150"></canvas>
+                    </div>
+                    <div class="card p-6 border border-slate-200">
+                        <h3 class="font-bold text-slate-700 mb-4 uppercase text-[10px] tracking-widest">Inventory Distribution</h3>
+                        <canvas id="catChart" height="150"></canvas>
+                    </div>
+                </div>`;
+            document.getElementById('app').insertAdjacentHTML('beforeend', chartHtml);
+
+            // Fetch history for trend chart
+            const histSnap = await getDocs(query(collection(db, "history"), where("loc", "==", session.loc), limit(50)));
+            const histData = histSnap.docs.map(d => d.data());
+            
+            // Group by Day
+            const days = {};
+            histData.forEach(h => {
+                const dayStr = h.date.split('T')[0];
+                if(!days[dayStr]) days[dayStr] = 0;
+                days[dayStr] += Math.abs(h.qty);
+            });
+            const sortedDays = Object.keys(days).sort();
+
+            new Chart(document.getElementById('stockChart'), {
+                type: 'line',
+                data: {
+                    labels: sortedDays,
+                    datasets: [{
+                        label: 'Volume',
+                        data: sortedDays.map(d => days[d]),
+                        borderColor: '#2563eb',
+                        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: { 
+                    responsive: true,
+                    plugins: { legend: { display: false } },
+                    scales: { y: { beginAtZero: true }, x: { grid: { display: false } } }
+                }
+            });
+
+            // Distribution Chart (Category-wise Stock Count)
+            const catCounts = {};
+            items.forEach(i => {
+                const c = i.category || 'General';
+                catCounts[c] = (catCounts[c] || 0) + 1;
+            });
+            
+            new Chart(document.getElementById('catChart'), {
+                type: 'doughnut',
+                data: {
+                    labels: Object.keys(catCounts),
+                    datasets: [{
+                        data: Object.values(catCounts),
+                        backgroundColor: ['#3b82f6', '#ef4444', '#f59e0b', '#10b981', '#6366f1', '#a855f7'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } },
+                    cutout: '70%'
+                }
+            });
+        }
+
+        window.showDashDetail = (type) => {
+            const { stocks, items } = window.dashData;
+            const now = new Date();
+            const warningDate = new Date();
+            warningDate.setMonth(warningDate.getMonth() + 6);
+
+            let filtered = [];
+            let title = "";
+
+            if (type === 'val') {
+                title = "Itemized Stock Value";
+                filtered = stocks.filter(s => s.qty > 0);
+            } else if (type === 'exp') {
+                title = "Expired Stock Details";
+                filtered = stocks.filter(s => s.qty > 0 && s.exp && new Date(s.exp) < now);
+            } else if (type === 'short') {
+                title = "Short Expiry Alerts (6 Months)";
+                filtered = stocks.filter(s => s.qty > 0 && s.exp && new Date(s.exp) < warningDate && new Date(s.exp) >= now);
+            } else if (type === 'low') {
+                title = "Low Stock Notifications";
+                // This is aggregate per item
+                const itemTotals = {};
+                stocks.forEach(s => {
+                    itemTotals[s.itemCode] = (itemTotals[s.itemCode] || 0) + s.qty;
+                });
+                const lowItems = items.filter(i => (itemTotals[i.code] || 0) < (i.minLevel || 10));
+                
+                const tableH = `
+                    <table class="w-full text-left text-sm border-separate border-spacing-y-2">
+                        <thead class="bg-slate-50 text-[10px] font-black uppercase text-slate-400"><tr><th class="p-3">Code</th><th class="p-3">Item Name</th><th class="p-3">Min Level</th><th class="p-3 text-red-500">Current Total</th></tr></thead>
+                        <tbody>${lowItems.map(i => `
+                            <tr class="bg-slate-50/50 hover:bg-white border-l-4 border-yellow-400">
+                                <td class="p-3 font-mono font-bold">${i.code}</td>
+                                <td class="p-3 font-bold">${i.name}</td>
+                                <td class="p-3 text-slate-400">${i.minLevel || 10}</td>
+                                <td class="p-3 font-black text-red-600">${itemTotals[i.code] || 0}</td>
+                            </tr>`).join('')}</tbody>
+                    </table>`;
+                return openModal(title, tableH);
+            }
+
+            const rows = filtered.map(s => {
+                const item = items.find(i => i.code === s.itemCode);
+                return `
+                    <tr class="bg-white border-b border-slate-100 hover:bg-blue-50/30 transition">
+                        <td class="p-3 font-mono text-xs text-slate-500">${s.itemCode}</td>
+                        <td class="p-3 font-bold text-slate-700">${item ? item.name : 'Unknown'}</td>
+                        <td class="p-3 font-medium text-slate-600">${s.exp || 'N/A'}</td>
+                        <td class="p-3 font-black text-blue-600 text-right">${s.qty}</td>
+                    </tr>`;
+            }).join('');
+
+            const h = `
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-50 text-[10px] font-black uppercase text-slate-400"><tr><th class="p-3 text-left">Code</th><th class="p-3 text-left">Item Name</th><th class="p-3 text-left">Batch (Exp)</th><th class="p-3 text-right">Qty</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>`;
+            
+            openModal(title, `<div class="max-h-96 overflow-auto">${h}</div>`);
+        };
+
+        window.dashDetail = async (type) => {
+            const stocks = (await getDocs(query(collection(db, "stocks"), where("loc", "==", session.loc)))).docs.map(d => d.data());
+            const items = (await getDocs(collection(db, "items"))).docs.map(d => d.data());
+            const now = new Date();
+            const warningDate = new Date(); warningDate.setMonth(warningDate.getMonth() + 6);
+
+            let r = '';
+            let title = '';
+
+            if (type === 'val') {
+                title = 'Stock Valuation';
+                // Group by Item
+                const grouped = {};
+                stocks.forEach(s => {
+                    if (!grouped[s.itemCode]) grouped[s.itemCode] = 0;
+                    grouped[s.itemCode] += s.qty;
+                });
+                r = Object.keys(grouped).map(k => {
+                    const i = items.find(x => x.code === k);
+                    const cost = i?.cost || 0;
+                    const tot = grouped[k] * cost;
+                    return `<tr><td>${k}</td><td>${i?.name}</td><td>${grouped[k]}</td><td>${formatCurrency(cost)}</td><td>${formatCurrency(tot)}</td></tr>`;
+                }).join('');
+                r = `<table class="w-full text-left text-sm"><thead><tr class="bg-slate-100"><th>Code</th><th>Item</th><th>Total Qty</th><th>Cost</th><th>Total Value</th></tr></thead><tbody>${r}</tbody></table>`;
+            }
+            if (type === 'exp') {
+                title = 'Expired Batches';
+                const filtered = stocks.filter(s => s.exp && new Date(s.exp) < now && s.qty > 0);
+                r = filtered.map(s => {
+                    const i = items.find(x => x.code === s.itemCode);
+                    return `<tr><td>${s.itemCode}</td><td>${i?.name || '-'}</td><td class="text-red-600 font-bold">${s.qty}</td><td>${s.exp}</td></tr>`;
+                }).join('');
+                r = `<table class="w-full text-left text-sm"><thead><tr class="bg-slate-100"><th>Item</th><th>Name</th><th>Qty</th><th>Exp</th></tr></thead><tbody>${r}</tbody></table>`;
+            }
+            if (type === 'short') {
+                title = 'Short Expiry (Next 6 Months)';
+                const filtered = stocks.filter(s => s.exp && new Date(s.exp) > now && new Date(s.exp) < warningDate && s.qty > 0);
+                r = filtered.map(s => {
+                    const i = items.find(x => x.code === s.itemCode);
+                    return `<tr><td>${s.itemCode}</td><td>${i?.name || '-'}</td><td class="text-orange-600 font-bold">${s.qty}</td><td>${s.exp}</td></tr>`;
+                }).join('');
+                r = `<table class="w-full text-left text-sm"><thead><tr class="bg-slate-100"><th>Item</th><th>Name</th><th>Qty</th><th>Exp</th></tr></thead><tbody>${r}</tbody></table>`;
+            }
+            if (type === 'low') {
+                title = 'Low Stock Items';
+                const itemTotals = {};
+                stocks.forEach(s => {
+                    if (!itemTotals[s.itemCode]) itemTotals[s.itemCode] = 0;
+                    itemTotals[s.itemCode] += s.qty;
+                });
+                // Filter Items
+                const lowItems = items.filter(i => {
+                    const t = itemTotals[i.code] || 0;
+                    return t < (i.minLevel || 10);
+                });
+
+                r = lowItems.map(i => `<tr><td>${i.code}</td><td>${i.name}</td><td class="text-red-600 font-bold">${itemTotals[i.code] || 0}</td><td>${i.minLevel || 10}</td></tr>`).join('');
+                r = `<table class="w-full text-left text-sm"><thead><tr class="bg-slate-100"><th>Code</th><th>Name</th><th>Current Total</th><th>Min Level</th></tr></thead><tbody>${r}</tbody></table>`;
+            }
+
+            openModal(title, `<div class="max-h-96 overflow-auto">${r}</div>`);
+        };
+
+        window.showUserProfile = async () => {
+             // Fetch full user details using username
+            const q = query(collection(db, "users"), where("username", "==", session.username));
+            const snap = await getDocs(q);
+            const u = snap.empty ? { fullName: session.user, username: session.username, role: 'User' } : snap.docs[0].data();
+            const locs = u.accessLocs ? u.accessLocs.join(', ') : 'All/None';
+            const pages = u.accessPages ? u.accessPages.join(', ') : 'All';
+
+            openModal("User Profile", `
+                <div class="text-center mb-6">
+                    <div class="w-20 h-20 rounded-full bg-slate-200 mx-auto flex items-center justify-center text-4xl mb-3 border-4 border-white shadow-lg">👤</div>
+                    <div class="text-2xl font-black text-slate-800">${u.fullName || session.user}</div>
+                    <div class="text-sm font-bold text-blue-500 uppercase tracking-widest">${u.role || 'User'}</div>
+                </div>
+                <div class="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3 mb-6">
+                    <div class="flex justify-between border-b border-slate-200 pb-2">
+                        <span class="text-xs font-bold text-slate-400 uppercase">Username</span>
+                        <span class="font-bold text-slate-700">${u.username}</span>
+                    </div>
+                     <div class="flex justify-between border-b border-slate-200 pb-2">
+                        <span class="text-xs font-bold text-slate-400 uppercase">Current Location</span>
+                        <span class="font-bold text-slate-700">${session.loc}</span>
+                    </div>
+                    <div>
+                        <span class="text-xs font-bold text-slate-400 uppercase block mb-1">Access Locations</span>
+                        <div class="flex flex-wrap gap-1">${u.accessLocs ? u.accessLocs.map(l => `<span class="px-2 py-0.5 bg-white border rounded text-xs font-bold text-slate-600">${l}</span>`).join('') : '-'}</div>
+                    </div>
+                    <div>
+                         <span class="text-xs font-bold text-slate-400 uppercase block mb-1">Access Pages</span>
+                         <div class="flex flex-wrap gap-1">${u.accessPages ? u.accessPages.map(p => `<span class="px-2 py-0.5 bg-blue-50 border border-blue-100 rounded text-xs font-bold text-blue-600 uppercase">${p}</span>`).join('') : '-'}</div>
+                    </div>
+                </div>
+                <button onclick="logout()" class="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3 rounded-xl shadow-lg shadow-red-200 transition">Log Out</button>
+             `, ``);
+        };
+
+        // === 2. ITEMS MASTER ===
+        window.tempData = {};
+
+        async function loadItems() {
+            const snap = await getDocs(collection(db, "items"));
+            const stocksSnap = await getDocs(query(collection(db, "stocks"), where("loc", "==", session.loc)));
+            const itemTotals = {};
+            stocksSnap.forEach(s => {
+                if(!itemTotals[s.data().itemCode]) itemTotals[s.data().itemCode] = 0;
+                itemTotals[s.data().itemCode] += s.data().qty;
+            });
+            document.getElementById('app').innerHTML = `
+                <div class="flex justify-between items-center mb-6">
+                    <input id="search-item" placeholder="Search items..." class="p-3 rounded-lg border w-64 shadow-sm" onkeyup="filterTable('item-table', 1)">
+                    <button onclick="itemModal()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-bold shadow-lg transition transform hover:scale-105">+ New</button>
+                </div>
+                <div class="card overflow-hidden">
+                    <table class="w-full text-left" id="item-table">
+                        <thead class="bg-slate-50 border-b border-slate-200 text-xs uppercase text-slate-500">
+                            <tr><th class="p-4">Code / Barcode</th><th class="p-4">Name</th><th class="p-4">Category</th><th class="p-4">Min</th><th class="p-4">Cost</th><th class="p-4">Sell</th><th class="p-4 text-right">Actions</th></tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                            ${snap.docs.map(d => {
+                const i = d.data();
+                const stock = itemTotals[i.code] || 0;
+                return `<tr>
+                                <td class="p-4 font-mono font-bold text-blue-600">
+                                    ${i.code}
+                                    ${i.barcode ? `<div class="text-[9px] text-slate-400 font-normal">BAR: ${i.barcode}</div>` : ''}
+                                </td>
+                                <td class="p-4 font-bold text-slate-700">${i.name}</td>
+                                <td class="p-4 text-slate-400 text-[10px] font-black uppercase tracking-widest">${i.category || 'General'}</td>
+                                <td class="p-4 font-bold ${ stock < (i.minLevel || 10) ? 'text-red-500 bg-red-50' : 'text-slate-400' } text-xs text-center rounded">${i.minLevel || 10}</td>
+                                <td class="p-4 font-medium">${formatCurrency(i.cost).replace('Rs ', '')}</td>
+                                <td class="p-4 font-bold text-slate-700">${formatCurrency(i.sell).replace('Rs ', '')}</td>
+                                <td class="p-4 text-right">
+                                    <button onclick="itemModal('${d.id}')" class="text-blue-500 font-bold hover:underline mr-3">Edit</button>
+                                    <button onclick="confirmAction('Delete ${i.code}?', 'delItem', '${d.id}')" class="text-red-500 font-bold hover:underline">Delete</button>
+                                </td>
+                            </tr>`;
+            }).join('')}
+                        </tbody>
+                    </table>
+                </div>`;
+        }
+
+        window.itemModal = async (id = null) => {
+            let d = { code: await generateID('ITEM', 'items'), name: '', packSize: 1, cost: 0, sell: 0, barcode: '', category: 'General', minLevel: 10 };
+            if (id) d = (await getDoc(doc(db, "items", id))).data();
+            window.tempData = { ...d, id };
+
+            openModal(id ? 'Edit Item' : 'Create Item', `
+                <div class="grid gap-4">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div><label class="block text-xs font-bold uppercase text-slate-400 mb-1">Item Code</label>
+                        <input value="${d.code}" disabled class="w-full p-2 bg-slate-100 rounded border border-slate-200 font-mono text-slate-500"></div>
+                        <div><label class="block text-xs font-bold uppercase text-slate-400 mb-1">Barcode</label>
+                        <input id="i-b" value="${d.barcode || ''}" class="w-full p-2 rounded border border-slate-300 font-mono" placeholder="Scan or Type Barcode"></div>
+                    </div>
+                    
+                    <div><label class="block text-xs font-bold uppercase text-slate-400 mb-1">Item Name</label>
+                    <input id="i-n" value="${d.name}" class="w-full p-2 rounded border border-slate-300 focus:border-blue-500 outline-none"></div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div><label class="block text-xs font-bold uppercase text-slate-400 mb-1">Category</label>
+                        <input id="i-cat" value="${d.category || 'General'}" class="w-full p-2 rounded border border-slate-300"></div>
+                        <div><label class="block text-xs font-bold uppercase text-slate-400 mb-1">Min Level (Alert)</label>
+                        <input id="i-min" value="${d.minLevel || 10}" type="number" class="w-full p-2 rounded border border-slate-300"></div>
+                    </div>
+
+                    <div class="grid grid-cols-3 gap-4">
+                        <div><label class="block text-xs font-bold uppercase text-slate-400 mb-1">Pack Size (Qty)</label>
+                        <input id="i-p" type="number" value="${d.packSize || 1}" class="w-full p-2 rounded border border-slate-300"></div>
+                        <div><label class="block text-xs font-bold uppercase text-slate-400 mb-1">Unit Cost Price</label>
+                        <input id="i-c" value="${d.cost}" type="number" class="w-full p-2 rounded border border-slate-300"></div>
+                        <div><label class="block text-xs font-bold uppercase text-slate-400 mb-1">Unit Selling Price</label>
+                        <input id="i-s" value="${d.sell}" type="number" class="w-full p-2 rounded border border-slate-300"></div>
+                    </div>
+                </div>
+            `, `<button onclick="saveItemPrep()" class="bg-blue-600 text-white px-6 py-2 rounded font-bold hover:bg-blue-700">Save Item</button>`);
+        };
+
+        window.saveItemPrep = () => {
+            window.tempData.name = document.getElementById('i-n').value;
+            window.tempData.barcode = document.getElementById('i-b').value;
+            window.tempData.category = document.getElementById('i-cat').value;
+            window.tempData.minLevel = parseFloat(document.getElementById('i-min').value) || 10;
+            window.tempData.packSize = parseFloat(document.getElementById('i-p').value) || 1;
+            window.tempData.cost = parseFloat(document.getElementById('i-c').value) || 0;
+            window.tempData.sell = parseFloat(document.getElementById('i-s').value) || 0;
+            if (!window.tempData.name) return alert("Name required");
+            window.confirmAction('Confirm Save?', 'saveItemExec');
+        };
+
+        window.saveItemExec = async () => {
+            if (window.tempData.id) await updateDoc(doc(db, "items", window.tempData.id), window.tempData);
+            else await addDoc(collection(db, "items"), window.tempData);
+            loadItems();
+            window.closeModal();
+        };
+        window.delItem = async (id) => { await deleteDoc(doc(db, "items", id)); loadItems(); };
+
+
+        // === 3. STOCK CHECK ===
+        async function loadStockCheck() {
+            document.getElementById('app').innerHTML = `
+                <div class="card p-6 min-h-[500px]">
+                    <h3 class="font-black text-2xl mb-4 text-slate-700">Stock Check</h3>
+                    <input id="sc-search" placeholder="🔍 Search Item Name or Code..." class="w-full p-4 text-lg border-2 border-slate-200 rounded-xl mb-6 focus:border-blue-500 outline-none" onkeyup="renderStockCheck()">
+                    <div id="sc-res" class="overflow-auto"></div>
+                </div>`;
+            window.renderStockCheck();
+        }
+
+        window.renderStockCheck = async () => {
+            const q = document.getElementById('sc-search').value.toLowerCase();
+            const items = (await getDocs(collection(db, "items"))).docs.map(d => d.data());
+            const stocks = (await getDocs(query(collection(db, "stocks"), where("loc", "==", session.loc)))).docs.map(d => d.data());
+
+            // Grouping
+            const grouped = {};
+            stocks.forEach(s => {
+                if (!grouped[s.itemCode]) grouped[s.itemCode] = { qty: 0, batches: [] };
+                grouped[s.itemCode].qty += s.qty;
+                grouped[s.itemCode].batches.push(s);
+            });
+
+            const rows = items.filter(i => i.name.toLowerCase().includes(q) || i.code.toLowerCase().includes(q)).map(i => {
+                const s = grouped[i.code] || { qty: 0, batches: [] };
+                return `<tr class="border-b border-slate-100 hover:bg-slate-50 transition">
+                    <td class="p-4 font-mono font-bold text-slate-500">${i.code}</td>
+                    <td class="p-4 font-bold text-lg text-slate-800">${i.name}</td>
+                    <td class="p-4 text-right font-black text-xl text-blue-600">${s.qty}</td>
+                    <td class="p-4 text-right"><button onclick="viewBatches('${i.code}')" class="text-xs bg-slate-200 px-3 py-1 rounded-full font-bold hover:bg-slate-300">View Details</button></td>
+                </tr>`;
+            }).join('');
+
+            document.getElementById('sc-res').innerHTML = `<table class="w-full"><thead><tr class="text-xs uppercase text-slate-400 font-bold"><th>Code</th><th>Item</th><th class="text-right">Total Qty</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+            window.currentBatches = grouped; // Store for modal
+        };
+
+        window.viewBatches = (code) => {
+            const b = window.currentBatches[code]?.batches || [];
+            if (b.length === 0) return alert("No Stock");
+            const h = b.map(x => `<tr><td class="p-2 border-b">${x.exp || 'NuLL'}</td><td class="p-2 border-b font-bold">${x.qty}</td></tr>`).join('');
+            openModal(`Stock: ${code}`, `<table class="w-full text-sm"><thead><tr><th>Expiry Date</th><th>Qty</th></tr></thead><tbody>${h}</table>`);
+        };
+
+
+        // === 4. SUPPLIERS ===
+        async function loadSuppliers() {
+            const snap = await getDocs(collection(db, "suppliers"));
+            document.getElementById('app').innerHTML = `
+                <div class="flex justify-between mb-4"><h3 class="font-bold text-xl">Supplier List</h3><button onclick="supModal()" class="btn bg-blue-600 text-white px-4 py-2 rounded font-bold">+ New Supplier</button></div>
+                <div class="card overflow-hidden">
+                    <table class="w-full text-left">
+                        <thead class="bg-slate-100 uppercase text-xs font-bold text-slate-500"><tr><th class="p-3">Name</th><th class="p-3">Contact</th><th class="p-3">Actions</th></tr></thead>
+                        <tbody>${snap.docs.map(d => `<tr class="border-b hover:bg-slate-50"><td class="p-3 font-bold">${d.data().name}</td><td class="p-3">${d.data().contact}</td><td class="p-3"><button onclick="supModal('${d.id}')" class="text-blue-500 font-bold mr-2">Edit</button><button onclick="confirmAction('Delete?', 'delSup', '${d.id}')" class="text-red-500 font-bold">Del</button></td></tr>`).join('')}</tbody>
+                    </table>
+                </div>`;
+        }
+        window.supModal = async (id = null) => {
+            let d = { name: '', contact: '' }; if (id) d = (await getDoc(doc(db, "suppliers", id))).data();
+            window.tempData = { ...d, id };
+            openModal("Supplier", `<div class="grid gap-3"><label class="font-bold text-xs uppercase text-slate-400">Name</label><input id="s-n" value="${d.name}" class="p-2 border rounded w-full"><label class="font-bold text-xs uppercase text-slate-400">Contact</label><input id="s-c" value="${d.contact}" class="p-2 border rounded w-full"></div>`, `<button onclick="saveSupPrep()" class="bg-blue-600 text-white px-4 py-2 rounded font-bold">Save</button>`);
+        };
+        window.saveSupPrep = () => { window.tempData.name = document.getElementById('s-n').value; window.tempData.contact = document.getElementById('s-c').value; confirmAction("Save Supplier?", "saveSupExec"); };
+        window.saveSupExec = async () => { if (window.tempData.id) await updateDoc(doc(db, "suppliers", window.tempData.id), window.tempData); else await addDoc(collection(db, "suppliers"), window.tempData); loadSuppliers(); closeModal(); };
+        window.delSup = async (id) => { await deleteDoc(doc(db, "suppliers", id)); loadSuppliers(); };
+
+
+        // === 5. LOCATIONS ===
+        async function loadLocations() {
+            const snap = await getDocs(collection(db, "locations"));
+            document.getElementById('app').innerHTML = `
+                <div class="flex justify-between mb-4"><h3 class="font-bold text-xl">Locations</h3><button onclick="locWiz1()" class="btn bg-blue-600 text-white px-4 py-2 rounded font-bold">+ New Location</button></div>
+                <div class="card overflow-hidden">
+                    <table class="w-full text-left">
+                        <thead class="bg-slate-100 uppercase text-xs font-bold text-slate-500"><tr><th class="p-3">Name</th><th class="p-3">Remark</th><th class="p-3">Active Pages</th><th class="p-3">Actions</th></tr></thead>
+                        <tbody>${snap.docs.map(d => `<tr class="border-b hover:bg-slate-50"><td class="p-3 font-bold">${d.data().name}</td><td class="p-3 text-sm text-slate-500">${d.data().remark}</td><td class="p-3"><span class="bg-slate-100 px-2 rounded text-xs font-bold">${d.data().pages?.length || 0} Pages</span></td><td class="p-3"><button onclick="locWiz1('${d.id}')" class="text-blue-500 font-bold mr-2">Edit</button><button onclick="confirmAction('Delete?', 'delLoc', '${d.id}')" class="text-red-500 font-bold">Del</button></td></tr>`).join('')}</tbody>
+                    </table>
+                </div>`;
+        }
+        window.locWiz1 = async (id = null) => {
+            let d = { name: '', remark: '', pages: [] }; if (id) d = (await getDoc(doc(db, "locations", id))).data();
+            window.tempData = { ...d, id };
+            openModal("Step 1: Location Info",
+                `<div class="grid gap-3">
+                    <label class="font-bold text-xs uppercase text-slate-400">Location Name</label><input id="l-n" value="${d.name}" class="p-2 border rounded w-full">
+                    <label class="font-bold text-xs uppercase text-slate-400">Remark</label><input id="l-r" value="${d.remark}" class="p-2 border rounded w-full">
+                </div>`,
+                `<button onclick="locWiz2()" class="bg-blue-600 text-white px-4 py-2 rounded font-bold">Next ></button>`);
+        };
+        window.locWiz2 = () => {
+            window.tempData.name = document.getElementById('l-n').value;
+            window.tempData.remark = document.getElementById('l-r').value;
+            if (!window.tempData.name) return alert("Name Required");
+
+            const checks = PAGES.map(p => `
+                <label class="flex items-center gap-3 p-3 border rounded hover:bg-slate-50 cursor-pointer">
+                    <input type="checkbox" value="${p.id}" class="pg-chk w-5 h-5 accent-blue-600" ${window.tempData.pages.includes(p.id) ? 'checked' : ''}>
+                    <span class="font-bold text-slate-700">${p.n}</span>
+                </label>`).join('');
+
+            openModal("Step 2: Page Access", `<div class="grid grid-cols-2 gap-2 max-h-[400px] overflow-auto">${checks}</div>`, `<button onclick="saveLocPrep()" class="bg-green-600 text-white px-4 py-2 rounded font-bold">Create Location</button>`);
+        };
+        window.saveLocPrep = () => {
+            window.tempData.pages = Array.from(document.querySelectorAll('.pg-chk:checked')).map(x => x.value);
+            confirmAction("Confirm Location?", "saveLocExec");
+        };
+        window.saveLocExec = async () => {
+            if (window.tempData.id) await updateDoc(doc(db, "locations", window.tempData.id), window.tempData); else await addDoc(collection(db, "locations"), window.tempData);
+            loadLocations(); closeModal();
+        };
+        window.delLoc = async (id) => { await deleteDoc(doc(db, "locations", id)); loadLocations(); };
+
+
+        // === 6. USERS ===
+        async function loadUsers() {
+            const snap = await getDocs(collection(db, "users"));
+            document.getElementById('app').innerHTML = `
+                <div class="flex justify-between mb-4"><h3 class="font-bold text-xl">User Access</h3><button onclick="usrWiz1()" class="btn bg-blue-600 text-white px-4 py-2 rounded font-bold">+ New User</button></div>
+                <div class="card overflow-hidden">
+                    <table class="w-full text-left">
+                        <thead class="bg-slate-100 uppercase text-xs font-bold text-slate-500"><tr><th class="p-3">Username</th><th class="p-3">Full Name</th><th class="p-3">Locations</th><th class="p-3">Actions</th></tr></thead>
+                        <tbody>${snap.docs.map(d => `<tr class="border-b hover:bg-slate-50"><td class="p-3 font-bold text-blue-600">${d.data().username}</td><td class="p-3 font-bold">${d.data().fullName}</td><td class="p-3 text-xs w-48">${d.data().allowedLocs?.join(', ')}</td><td class="p-3"><button onclick="usrWiz1('${d.id}')" class="text-blue-500 font-bold mr-2">Edit</button><button onclick="confirmAction('Delete?', 'delUsr', '${d.id}')" class="text-red-500 font-bold">Del</button></td></tr>`).join('')}</tbody>
+                    </table>
+                </div>`;
+        }
+        window.usrWiz1 = async (id = null) => {
+            let d = { username: '', fullName: '', password: '', allowedLocs: [], permissions: [] };
+            if (id) d = (await getDoc(doc(db, "users", id))).data();
+            window.tempData = { ...d, id };
+
+            openModal("Step 1: User Credentials", `
+                <div class="grid gap-3">
+                    <label class="font-bold text-xs uppercase text-slate-400">Full Name</label><input id="u-f" value="${d.fullName}" class="p-2 border rounded w-full">
+                    <label class="font-bold text-xs uppercase text-slate-400">Username</label><input id="u-u" value="${d.username}" class="p-2 border rounded w-full">
+                    <label class="font-bold text-xs uppercase text-slate-400">Password</label><input id="u-p" value="${d.password}" type="text" class="p-2 border rounded w-full">
+                </div>
+            `, `<button onclick="usrWiz2()" class="bg-blue-600 text-white px-4 py-2 rounded font-bold">Next ></button>`);
+        };
+        window.usrWiz2 = async () => {
+            window.tempData.fullName = document.getElementById('u-f').value;
+            window.tempData.username = document.getElementById('u-u').value;
+            window.tempData.password = document.getElementById('u-p').value;
+
+            const locs = await getDocs(collection(db, "locations"));
+            const checks = locs.docs.map(l => `
+                <label class="flex items-center gap-3 p-3 border rounded hover:bg-slate-50 cursor-pointer">
+                    <input type="checkbox" value="${l.data().name}" class="loc-chk w-5 h-5 accent-blue-600" ${window.tempData.allowedLocs.includes(l.data().name) ? 'checked' : ''}>
+                    <span class="font-bold text-slate-700">${l.data().name}</span>
+                </label>`).join('');
+
+            openModal("Step 2: Allowed Locations", `<div class="grid gap-2">${checks}</div>`, `<button onclick="usrWiz3()" class="bg-blue-600 text-white px-4 py-2 rounded font-bold">Next ></button>`);
+        };
+        window.usrWiz3 = () => {
+            window.tempData.allowedLocs = Array.from(document.querySelectorAll('.loc-chk:checked')).map(x => x.value);
+
+            const pgChecks = PAGES.filter(p => !p.advanced).map(p => `
+                <label class="flex items-center gap-3 p-3 border rounded hover:bg-slate-50 cursor-pointer">
+                    <input type="checkbox" value="${p.id}" class="perm-chk w-5 h-5 accent-blue-600" ${window.tempData.permissions?.includes(p.id) ? 'checked' : ''}>
+                    <span class="font-bold text-slate-700 font-mono text-[11px] uppercase">${p.n}</span>
+                </label>`).join('');
+
+            const funcChecks = PAGES.filter(p => p.advanced).map(f => `
+                <label class="flex items-center gap-3 p-3 border-2 border-amber-100 bg-amber-50/30 rounded-xl hover:bg-amber-50 cursor-pointer">
+                    <input type="checkbox" value="${f.id}" class="perm-chk w-5 h-5 accent-amber-600" ${window.tempData.permissions?.includes(f.id) ? 'checked' : ''}>
+                    <span class="font-black text-amber-900 font-mono text-[11px] uppercase">${f.n}</span>
+                </label>`).join('');
+
+            openModal("Step 3: User Permissions", `
+                <div class="space-y-4">
+                    <div>
+                        <h4 class="text-[10px] font-black uppercase text-slate-400 mb-2 tracking-widest pl-2">Page Access Controls</h4>
+                        <div class="grid grid-cols-2 gap-2 max-h-[300px] overflow-auto pr-2 custom-scrollbar">${pgChecks}</div>
+                    </div>
+                    <div>
+                        <h4 class="text-[10px] font-black uppercase text-amber-500 mb-2 tracking-widest pl-2">Advanced Functional Authority</h4>
+                        <div class="grid grid-cols-2 gap-2">${funcChecks}</div>
+                    </div>
+                </div>`, `<button onclick="saveUsrPrep()" class="bg-green-600 text-white px-8 py-3 rounded-xl font-black shadow-lg">Create / Save User</button>`);
+        };
+        window.saveUsrPrep = () => {
+            window.tempData.permissions = Array.from(document.querySelectorAll('.perm-chk:checked')).map(x => x.value);
+            confirmAction("Confirm User?", "saveUsrExec");
+        };
+        window.saveUsrExec = async () => {
+            if (window.tempData.id) await updateDoc(doc(db, "users", window.tempData.id), window.tempData); else await addDoc(collection(db, "users"), window.tempData);
+            loadUsers(); closeModal();
+        };
+        window.delUsr = async (id) => { await deleteDoc(doc(db, "users", id)); loadUsers(); };
+
+
+        // === 7. DIRECT STOCK ADD ===
+        async function loadDirectAdd() {
+            const snap = await getDocs(collection(db, "items"));
+            document.getElementById('app').innerHTML = `
+                <div class="max-w-md mx-auto card p-8 mt-10">
+                    <h3 class="font-black text-2xl mb-6 text-slate-700">Direct Stock Entry</h3>
+                    <div class="grid gap-4">
+                        <div><label class="font-bold text-xs uppercase text-slate-400">Item Name</label>
+                        <select id="da-i" class="w-full p-3 border rounded-lg bg-slate-50">${snap.docs.map(d => `<option value="${d.data().code}">${d.data().name}</option>`).join('')}</select></div>
+                        <div><label class="font-bold text-xs uppercase text-slate-400">Quantity</label>
+                        <input id="da-q" type="number" class="w-full p-3 border rounded-lg" placeholder="Enter Qty"></div>
+                        <div><label class="font-bold text-xs uppercase text-slate-400">Expiry Date</label>
+                        <input id="da-e" type="date" class="w-full p-3 border rounded-lg"></div>
+                        <button onclick="saveDAPrep()" class="w-full bg-blue-600 text-white p-3 rounded-lg font-bold hover:bg-blue-700 mt-2">Add Stock</button>
+                    </div>
+                </div>`;
+        }
+        window.saveDAPrep = () => {
+            const q = document.getElementById('da-q').value;
+            const e = document.getElementById('da-e').value;
+            if (!q || !e) return alert("Fill all fields");
+            confirmAction("Add Stock?", "saveDAExec");
+        };
+        window.saveDAExec = async () => {
+            const i = document.getElementById('da-i').value;
+            const q = parseFloat(document.getElementById('da-q').value);
+            const e = document.getElementById('da-e').value;
+            await addDoc(collection(db, "stocks"), { itemCode: i, loc: session.loc, qty: q, exp: e, date: new Date().toISOString() });
+            await logHistory(i, 'DIRECT', q);
+            alert("Stock Added!");
+            loadDirectAdd();
+            window.closeModal();
+        };
+
+
+        // === 8. PURCHASE ORDER (PO) ===
+        async function loadPO() {
+            const raw = await getDocs(query(collection(db, "docs"), where("type", "==", "PO"), where("loc", "==", session.loc)));
+            const filtered = raw.docs.sort((a, b) => new Date(b.data().date) - new Date(a.data().date));
+            const snap = { docs: filtered };
+
+            // Stats
+            let totalVal = 0, pendingApp = 0, approved = 0;
+            filtered.forEach(d => {
+                const data = d.data();
+                if(data.status === 'PENDING') pendingApp++;
+                if(data.status === 'APPROVED') approved++;
+                (data.items || []).forEach(it => totalVal += (it.qty * (it.cost || 0)));
+            });
+
+            document.getElementById('app').innerHTML = `
+                <div class="animate-fade space-y-8">
+                    <!-- Dashboard Summary -->
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div class="card p-6 bg-indigo-600 text-white shadow-xl shadow-indigo-100 flex flex-col justify-between">
+                            <div class="flex justify-between items-center mb-6">
+                                <div class="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center text-2xl">📝</div>
+                                <span class="text-[10px] font-black uppercase tracking-[0.2em] opacity-60 italic">Total Load</span>
+                            </div>
+                            <div>
+                                <div class="text-3xl font-black">${snap.docs.length}</div>
+                                <p class="text-[10px] font-bold uppercase opacity-80 mt-1">Lifecycle Orders</p>
+                            </div>
+                        </div>
+                        <div class="card p-6 border-2 border-indigo-100 bg-white flex flex-col justify-between group hover:border-indigo-400 transition-all">
+                            <div class="flex justify-between items-center mb-6">
+                                <div class="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center text-2xl group-hover:scale-110 transition">⏳</div>
+                                <span class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 italic">Auth Queue</span>
+                            </div>
+                            <div>
+                                <div class="text-3xl font-black text-slate-800">${pendingApp}</div>
+                                <p class="text-[10px] font-black text-indigo-500 uppercase mt-1">Pending Approval</p>
+                            </div>
+                        </div>
+                        <div class="card p-6 border-2 border-emerald-100 bg-white flex flex-col justify-between group hover:border-emerald-400 transition-all">
+                            <div class="flex justify-between items-center mb-6">
+                                <div class="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center text-2xl group-hover:scale-110 transition">✅</div>
+                                <span class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 italic">Induction Ready</span>
+                            </div>
+                            <div>
+                                <div class="text-3xl font-black text-slate-800">${approved}</div>
+                                <p class="text-[10px] font-black text-emerald-500 uppercase mt-1">Authorized for GRN</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+                        <div class="flex items-center gap-5">
+                            <h3 class="font-black text-3xl text-slate-800 tracking-tight">Purchase Center</h3>
+                            <div class="flex gap-1 p-1 bg-slate-200/50 rounded-xl">
+                                <button onclick="filterPOList('ALL')" class="po-f-btn active px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all bg-indigo-600 text-white">ALL</button>
+                                <button onclick="filterPOList('PENDING')" class="po-f-btn px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all">PENDING</button>
+                                <button onclick="filterPOList('APPROVED')" class="po-f-btn px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all text-indigo-600">APPROVED</button>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                            <div class="flex-1 md:flex-none bg-white p-2 rounded-2xl border border-slate-200 shadow-xl flex items-center">
+                                <input id="po-find" placeholder="ID: PO-0000..." class="border-none bg-transparent px-4 py-2 text-sm w-full md:w-48 focus:ring-0 font-black text-slate-700">
+                                <button onclick="viewOldPOByNo()" class="bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-700 transition active:scale-95 shadow-lg shadow-indigo-100">Find</button>
+                            </div>
+                            <button onclick="createPO()" class="bg-slate-900 border-2 border-slate-900 hover:bg-white hover:text-slate-900 text-white px-8 py-4 rounded-2xl font-black shadow-2xl transition-all transform active:scale-95 flex items-center gap-3">
+                                <span class="text-xl">+</span>
+                                <span class="uppercase tracking-widest text-[11px]">Generate ORDER</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="card overflow-hidden border border-slate-200 shadow-sm bg-white rounded-[2rem]">
+                        <table class="w-full text-left" id="po-table">
+                            <thead class="bg-slate-50 border-b border-slate-100 uppercase text-[10px] font-black text-slate-400 tracking-widest">
+                                <tr>
+                                    <th class="p-6">Order Identity</th>
+                                    <th class="p-6">Supplier Context</th>
+                                    <th class="p-6 text-center">Lifecycle</th>
+                                    <th class="p-6">Recorded Date</th>
+                                    <th class="p-6 text-right">Strategic Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-50">
+                                ${snap.docs.map(d => {
+                                    const data = d.data();
+                                    const st = data.status || 'PENDING';
+                                    let color = "bg-amber-100 text-amber-600";
+                                    if(st === 'APPROVED') color = "bg-indigo-100 text-indigo-600 font-black";
+                                    if(st === 'RECEIVED') color = "bg-emerald-100 text-emerald-600";
+                                    if(st === 'VOID' || st === 'CANCELLED') color = "bg-rose-100 text-rose-600 line-through opacity-50";
+
+                                    const isPending = st === 'PENDING';
+                                    const canApprove = (session.perms || []).includes('po_approve') || session.isAdmin || session.isAdmin === 'true';
+
+                                    return `
+                                    <tr class="hover:bg-slate-50/50 transition-colors group po-row" data-status="${st}">
+                                        <td class="p-6">
+                                            <div class="font-black text-slate-800 text-base flex items-center gap-2">
+                                                <span>${data.docNo}</span>
+                                                ${data.status === 'APPROVED' ? '<span class="text-emerald-500 text-[8px] animate-pulse">●</span>' : ''}
+                                            </div>
+                                            <div class="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">${data.items?.length || 0} Expected Items</div>
+                                        </td>
+                                        <td class="p-6">
+                                            <div class="font-black text-slate-700 font-mono text-xs uppercase">${data.supplier}</div>
+                                        </td>
+                                        <td class="p-6 text-center">
+                                             <span class="${color} px-3 py-1 rounded-full text-[9px] font-black uppercase border border-current opacity-70 tracking-widest">${st}</span>
+                                        </td>
+                                        <td class="p-6">
+                                            <div class="text-xs font-bold text-slate-500">${new Date(data.date).toLocaleDateString()}</div>
+                                        </td>
+                                        <td class="p-6 text-right">
+                                            <div class="flex justify-end gap-2">
+                                                ${isPending && canApprove ? `
+                                                    <button onclick="window.confirmAction('Authorize this Purchase Order?','approvePOExec','${d.id}')" class="bg-amber-500 text-white px-4 py-2 rounded-xl font-black text-[9px] uppercase tracking-widest hover:bg-amber-600 transition shadow-lg shadow-amber-100">Approve PO</button>
+                                                ` : ''}
+                                                <button onclick="viewOldPO('${d.id}')" class="text-slate-400 hover:text-indigo-600 font-black text-[10px] uppercase tracking-[0.2em] p-3 rounded-xl hover:bg-indigo-50 transition-all">Inspect</button>
+                                            </div>
+                                        </td>
+                                    </tr>`}).join('')}
+                            </tbody>
+                        </table>
+                        ${snap.docs.length === 0 ? '<div class="p-24 text-center text-slate-300 font-black uppercase tracking-[0.3em] italic text-xs">Zero Orders Found</div>' : ''}
+                    </div>
+                </div>`;
+            
+            window.filterPOList = (st) => {
+                const btns = document.querySelectorAll('.po-f-btn');
+                btns.forEach(b => b.classList.remove('bg-indigo-600', 'text-white'));
+                event.target.classList.add('bg-indigo-600', 'text-white');
+
+                const rows = document.querySelectorAll('.po-row');
+                rows.forEach(r => {
+                    if (st === 'ALL') r.style.display = '';
+                    else r.style.display = r.dataset.status === st ? '' : 'none';
+                });
+            };
+        }
+
+window.viewOldPOByNo = async () => {
+            const n = document.getElementById('po-find').value.trim();
+            if (!n) return alert("Security Context: Document Number Required");
+            const snap = await getDocs(query(collection(db, "docs"), where("docNo", "==", n)));
+            if (snap.empty) return alert("System Log: No matching PO record found.");
+            viewOldPO(snap.docs[0].id);
+        };
+
+        window.viewOldPO = async (id) => {
+            const dSnap = await getDoc(doc(db, "docs", id));
+            const d = dSnap.data();
+            
+            let netVal = 0;
+            const rows = (d.items || []).map(x => {
+                const rowTotal = (x.qty || 0) * (x.cost || 0);
+                netVal += rowTotal;
+                return `
+                <tr class="border-b border-slate-100 last:border-none group hover:bg-slate-50 transition-colors">
+                    <td class="p-5">
+                        <div class="font-black text-slate-800 text-sm">${x.name || 'Unknown Item'}</div>
+                        <div class="text-[10px] text-slate-400 font-mono tracking-tighter uppercase">${x.code}</div>
+                    </td>
+                    <td class="p-5 text-center">
+                         <span class="bg-indigo-50 text-indigo-600 px-4 py-1.5 rounded-lg font-black text-sm">${x.qty}</span>
+                         <div class="text-[9px] text-slate-300 font-bold uppercase mt-1">${x.pack || 'UNIT'}</div>
+                    </td>
+                    <td class="p-5 text-right font-black text-slate-600 text-xs font-mono">${formatCurrency(x.cost || 0)}</td>
+                    <td class="p-5 text-right font-black text-indigo-600 text-xs font-mono">${formatCurrency(rowTotal)}</td>
+                </tr>`}).join('');
+
+            openModal(`Document Inspection: ${d.docNo}`,
+                `<div class="space-y-6">
+                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div class="bg-slate-50 p-4 rounded-3xl border border-slate-100 shadow-sm">
+                             <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Supplier Entity</div>
+                             <div class="font-black text-indigo-900 text-xs truncate uppercase px-1">${d.supplier}</div>
+                        </div>
+                        <div class="bg-indigo-50/30 p-4 rounded-3xl border border-indigo-100 text-center shadow-sm">
+                             <div class="text-[9px] font-black text-indigo-400 uppercase tracking-widest mb-1.5">Lifecycle Phase</div>
+                             <div class="font-black text-indigo-600 text-[10px] uppercase select-none tracking-widest">${d.status}</div>
+                        </div>
+                        <div class="bg-slate-50 p-4 rounded-3xl border border-slate-100 text-right shadow-sm">
+                             <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 mr-1">Asset Volume</div>
+                             <div class="font-black text-slate-800 text-xs px-1">${d.items?.length || 0} Lines</div>
+                        </div>
+                        <div class="bg-slate-50 p-4 rounded-3xl border border-slate-100 text-right shadow-sm">
+                             <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 mr-1">Timestamp</div>
+                             <div class="font-black text-slate-800 text-xs px-1">${new Date(d.date).toLocaleDateString()}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="border border-slate-200 rounded-[2.5rem] overflow-hidden shadow-2xl shadow-slate-100 bg-white">
+                        <table class="w-full text-left">
+                            <thead class="bg-slate-50 text-[10px] font-black uppercase text-slate-400 border-b border-slate-100 tracking-[0.2em]">
+                                <tr><th class="p-5">Asset Identity</th><th class="p-5 text-center">Qty / Config</th><th class="p-5 text-right">Unit Cost</th><th class="p-5 text-right">Extension</th></tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-50">${rows}</tbody>
+                        </table>
+                        <div class="bg-slate-50 p-6 flex justify-between items-center border-t border-slate-100">
+                             <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest italic">Valuation Estimate</div>
+                             <div class="text-2xl font-black text-indigo-600 tracking-tighter font-mono">${formatCurrency(netVal)}</div>
+                        </div>
+                    </div>
+                    ${d.approvedBy ? `
+                        <div class="p-4 bg-emerald-50 border border-emerald-100 rounded-3xl flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-emerald-600 italic">
+                            <span>Authorized by ${d.approvedBy}</span>
+                            <span>${new Date(d.approvedAt).toLocaleString()}</span>
+                        </div>
+                    ` : ''}
+                 </div>`,
+                `<div class="flex flex-wrap gap-4 w-full">
+                    <button onclick="printPO('${id}')" class="flex-1 bg-slate-900 text-white py-5 rounded-3xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-800 transition shadow-xl shadow-slate-200 active:scale-95">Print Document</button>
+                    ${d.status === 'PENDING' ? `
+                        <button onclick="window.confirmAction('Void this procurement request?','cancelPOExec','${id}')" class="flex-1 bg-white border-2 border-slate-100 text-rose-500 py-5 rounded-3xl font-black text-[10px] uppercase tracking-widest hover:bg-rose-50 transition active:scale-95">Void Order</button>
+                        ${(session.perms || []).includes('po_approve') || session.isAdmin || session.isAdmin === 'true' ? `
+                            <button onclick="window.confirmAction('Authorize this Purchase Order?','approvePOExec','${id}')" class="flex-1 bg-amber-500 text-white py-5 rounded-3xl font-black text-[10px] uppercase tracking-widest hover:bg-amber-600 transition shadow-xl shadow-amber-100 active:scale-95">Approve PO</button>
+                        ` : ''}
+                    ` : ''}
+                    ${d.status === 'APPROVED' ? `
+                        <button onclick="window.goToGRNFromPO('${d.docNo}')" class="flex-1 bg-emerald-600 text-white py-5 rounded-3xl font-black text-[10px] uppercase tracking-widest hover:bg-emerald-700 transition shadow-xl shadow-emerald-100 active:scale-95">Induct Stock</button>
+                    ` : ''}
+                    <button onclick="closeModal()" class="px-10 bg-slate-100 text-slate-500 py-5 rounded-3xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 transition">Exit</button>
+                </div>`);
+        };
+
+        window.approvePOExec = async (id) => {
+            const hasPerm = (session.perms || []).includes('po_approve') || session.isAdmin || session.isAdmin === 'true';
+            if (!hasPerm) return alert("Security Error: Insufficient authority to approve procurement requests.");
+            await updateDoc(doc(db, "docs", id), { status: 'APPROVED', approvedBy: session.user, approvedAt: new Date().toISOString() });
+            closeModal();
+            loadPO();
+        };
+
+        window.goToGRNFromPO = (no) => {
+            closeModal();
+            loadPage('grn');
+            setTimeout(() => {
+                const input = document.getElementById('grn-po');
+                if(input) {
+                    input.value = no;
+                    window.loadGRNFromPO();
+                }
+            }, 500);
+        };
+
+        window.printPO = async (id) => {
+            try {
+                const dSnap = await getDoc(doc(db, "docs", id));
+                const d = dSnap.data();
+                const cSnap = await getDoc(doc(db, "settings", "company"));
+                const c = cSnap.exists() ? cSnap.data() : { name: "PSS - Stock System", addr: "Prasatek System Solutions", tel: "0112 345 678" };
+
+                const rows = d.items.map((x, idx) => `
+                    <tr>
+                        <td style="text-align:center">${idx + 1}</td>
+                        <td style="padding:12px; border-bottom:1px solid #eee;"><b>${x.name}</b><br><small>CD: ${x.code}</small></td>
+                        <td style="text-align:center; font-weight:bold;">${x.qty}</td>
+                        <td style="text-align:center;">${x.pack || 'Standard'}</td>
+                    </tr>
+                `).join('');
+
+                const w = window.open('', '', 'width=900,height=800');
+                w.document.write(`
+                    <html><head><title>PO ${d.docNo}</title>
+                    <style>
+                        body { font-family: 'Segoe UI', Tahoma, sans-serif; padding: 40px; color: #1e293b; line-height: 1.6; }
+                        header { border-bottom: 4px solid #4f46e5; padding-bottom: 20px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
+                        h1 { font-size: 32px; font-weight: 900; margin: 0; color: #4f46e5; letter-spacing: -1px; }
+                        .co-details { text-align: right; }
+                        .meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-bottom: 40px; background: #f5f3ff; padding: 25px; border-radius: 20px; border: 1px solid #ddd6fe; }
+                        .meta-box h4 { margin: 0 0 5px; text-transform: uppercase; font-size: 10px; color: #4f46e5; tracking: 1px; }
+                        .meta-box p { margin: 0; font-weight: 800; font-size: 14px; }
+                        table { width: 100%; border-collapse: collapse; margin-bottom: 30px; }
+                        th { background: #4f46e5; color: white; padding: 12px; text-transform: uppercase; font-size: 11px; font-weight: 900; border: 1px solid #4f46e5; }
+                        td { padding: 12px; border: 1px solid #f1f5f9; font-size: 13px; }
+                        .footer { margin-top: 100px; border-top: 1px dashed #cbd5e1; padding-top: 20px; display: flex; justify-content: space-between; font-size: 10px; color: #94a3b8; }
+                    </style>
+                    </head><body>
+                        <header>
+                            <div class="co-details" style="text-align:left; display:flex; align-items:center; gap:15px;">
+                                <img src="logo.png" style="height:60px; object-fit:contain;">
+                                <div>
+                                    <div style="font-size:42px; font-weight:900; color:#1e293b; line-height:1;">${c.name}</div>
+                                    <div style="font-size:14px; font-weight:600; color:#64748b; margin-top:5px;">${c.addr} | ${c.tel}</div>
+                                </div>
+                            </div>
+                            <div style="text-align:right;">
+                                <h1 style="font-size:24px; font-weight:900; color:#4f46e5; margin:0; text-transform:uppercase;">PURCHASE ORDER</h1>
+                                <p style="margin:5px 0; font-weight:700; color:#94a3b8; font-size:12px;">Procurement Request Protocol</p>
+                            </div>
+                        </header>
+                        <div class="meta">
+                            <div class="meta-box"><h4>Order Identity</h4><p>${d.docNo}</p></div>
+                            <div class="meta-box"><h4>Supply Partner</h4><p>${d.supplier}</p></div>
+                            <div class="meta-box"><h4>Request Date</h4><p>${new Date(d.date).toLocaleString()}</p></div>
+                            <div class="meta-box"><h4>Station</h4><p>${session.loc}</p></div>
+                        </div>
+                        <table>
+                            <thead><tr><th>#</th><th>Asset Description</th><th style="text-align:center">Request Qty</th><th style="text-align:center">Pack Config</th></tr></thead>
+                            <tbody>${rows}</tbody>
+                        </table>
+                        <div class="footer">
+                             <div>Procurement Authority Signature: _______________________</div>
+                             <div>Generated by ${session.user} | PSS - Stock System</div>
+                        </div>
+                    </body></html>
+                `);
+                w.document.close();
+                w.focus();
+                setTimeout(() => { w.print(); }, 1000);
+            } catch (e) { alert("Execution Error: " + e.message); }
+        };
+
+        window.createPO = async () => {
+            const rawS = await getDocs(collection(db, "suppliers"));
+            const rawI = await getDocs(collection(db, "items"));
+            const items = rawI.docs.map(x => x.data());
+            const sups = rawS.docs.map(x => x.data());
+
+            window.tempItems = [];
+            
+            openModal("Strategic Procurement: Market Acquisition", `
+                <div class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="bg-slate-50 p-4 rounded-3xl border border-slate-200 flex flex-col">
+                            <label class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-2">Supply Partner</label>
+                            <select id="po-s" class="w-full bg-white border-none p-3 rounded-2xl font-black text-indigo-900 focus:ring-0 text-xs uppercase shadow-sm">
+                                ${sups.map(x => `<option value="${x.name}">${x.name}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="bg-indigo-600 p-4 rounded-3xl text-white flex flex-col justify-center">
+                             <div class="text-[9px] font-black uppercase tracking-widest opacity-60 ml-2">Estimated Valuation</div>
+                             <div id="po-total-val" class="text-2xl font-black tracking-tighter ml-2 font-mono">${formatCurrency(0)}</div>
+                        </div>
+                    </div>
+
+                    <div class="p-6 rounded-[2.5rem] border-2 border-slate-100 bg-white shadow-xl space-y-4">
+                         <div class="flex justify-between items-center mb-1">
+                             <h4 class="font-black text-[10px] uppercase text-slate-400 tracking-widest italic ml-1">Asset Allocation</h4>
+                             <div id="p-stock-info" class="text-[9px] font-black text-indigo-500 uppercase">Available: 0 Units</div>
+                         </div>
+                         
+                         <div class="space-y-3">
+                             <div class="relative group">
+                                <input type="text" id="po-item-search" placeholder="Filter Assets by Name or Identity..." class="w-full p-4 pl-12 bg-slate-50 border-none rounded-2xl font-bold text-sm outline-none focus:ring-2 focus:ring-indigo-100 transition-all" oninput="filterPOItemOptions()">
+                                <div class="absolute left-4 top-4 text-slate-300 group-focus-within:text-indigo-500 transition-colors">🔍</div>
+                             </div>
+                             
+                             <select id="po-i" class="w-full p-4 bg-slate-50 border-none rounded-2xl font-black text-slate-700 outline-none text-sm appearance-none shadow-inner" onchange="checkPOStock()">
+                                ${items.map(x => `<option value="${x.code}" data-name="${x.name}" data-pack="${x.packSize || 1}" data-cost="${x.cost || 0}">${x.name} (${x.code})</option>`).join('')}
+                             </select>
+                         </div>
+
+                         <div class="grid grid-cols-2 gap-4">
+                             <div>
+                                <label class="block text-[9px] font-black text-slate-300 uppercase tracking-widest mb-1.5 ml-2">Order Unit Count</label>
+                                <input id="po-q" type="number" placeholder="Qty" class="w-full p-4 bg-slate-50 border-none rounded-2xl text-center font-black text-2xl text-indigo-600 outline-none focus:ring-2 focus:ring-indigo-100 transition">
+                             </div>
+                             <div class="flex items-end">
+                                 <button onclick="addPOItem()" class="w-full bg-slate-900 text-white p-4 h-16 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-600 transition-all transform active:scale-90 shadow-lg shadow-slate-100 flex items-center justify-center gap-3 group">
+                                     <span class="text-2xl group-hover:rotate-90 transition-transform">+</span>
+                                     <span>ADD ASSET</span>
+                                 </button>
+                             </div>
+                         </div>
+                    </div>
+
+                    <div class="space-y-3">
+                        <div class="flex justify-between items-center px-4">
+                            <h4 class="font-black text-[10px] uppercase text-slate-400 tracking-widest italic">Consolidated Order Manifest</h4>
+                            <span id="po-counter" class="text-[10px] font-black text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full uppercase">0 Entities</span>
+                        </div>
+                        <div id="po-list" class="space-y-3 max-h-64 overflow-y-auto pr-2 custom-scrollbar pb-4 font-mono">
+                            <div class="p-16 text-center border-4 border-dashed border-slate-50 rounded-[3rem] text-slate-200 uppercase font-black tracking-widest text-[10px] italic">Manifest Empty</div>
+                        </div>
+                    </div>
+                </div>
+             `, `<button onclick="savePOPrep()" class="w-full bg-slate-900 text-white p-6 rounded-[2.5rem] font-black text-xl shadow-2xl hover:bg-indigo-600 transition-all transform active:scale-95 flex items-center justify-center gap-4 group">
+                    <span>EXECUTE PROCUREMENT</span>
+                    <svg class="w-7 h-7 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                 </button>`);
+
+            window.filterPOItemOptions = () => {
+                const search = document.getElementById('po-item-search').value.toLowerCase();
+                const sel = document.getElementById('po-i');
+                const options = Array.from(sel.options);
+                let first = true;
+                options.forEach(opt => {
+                    const match = opt.text.toLowerCase().includes(search);
+                    opt.style.display = match ? '' : 'none';
+                    if(match && first) { sel.value = opt.value; first = false; }
+                });
+                checkPOStock();
+            };
+            
+            checkPOStock();
+        };
+
+        window.addPOItem = () => {
+            const iSel = document.getElementById('po-i');
+            const code = iSel.value;
+            const name = iSel.options[iSel.selectedIndex].dataset.name;
+            const pack = iSel.options[iSel.selectedIndex].dataset.pack;
+            const cost = parseFloat(iSel.options[iSel.selectedIndex].dataset.cost) || 0;
+            const qty = parseFloat(document.getElementById('po-q').value) || 0;
+
+            if (qty <= 0) return alert("System Warning: Unit allocation required.");
+
+            const existing = window.tempItems.find(x => x.code === code);
+            if (existing) existing.qty += qty;
+            else window.tempItems.push({ code, name, pack, qty, cost });
+
+            renderPOList();
+            document.getElementById('po-q').value = '';
+            document.getElementById('po-item-search').value = '';
+            filterPOItemOptions();
+            document.getElementById('po-item-search').focus();
+        };
+
+        window.renderPOList = () => {
+             const list = document.getElementById('po-list');
+             const counter = document.getElementById('po-counter');
+             const totalDisplay = document.getElementById('po-total-val');
+             
+             let netTotal = 0;
+             window.tempItems.forEach(x => netTotal += (x.qty * x.cost));
+             
+             totalDisplay.innerText = formatCurrency(netTotal);
+             counter.innerText = `${window.tempItems.length} Entities`;
+
+             if(window.tempItems.length === 0) {
+                 list.innerHTML = `<div class="p-16 text-center border-4 border-dashed border-slate-50 rounded-[3rem] text-slate-200 uppercase font-black tracking-widest text-[10px] italic">Manifest Empty</div>`;
+                 return;
+             }
+
+             list.innerHTML = window.tempItems.map((x, i) => `
+                 <div class="flex justify-between items-center bg-white p-5 border-2 border-slate-50 rounded-3xl shadow-sm hover:shadow-xl transition-all group relative overflow-hidden">
+                    <div class="absolute left-0 top-0 bottom-0 w-1 bg-indigo-500 opacity-0 group-hover:opacity-100 transition-all"></div>
+                    <div>
+                        <div class="font-black text-slate-800 text-sm italic underline decoration-indigo-100 underline-offset-4">${x.name}</div>
+                        <div class="text-[9px] font-black text-slate-300 font-mono tracking-tighter mt-1 uppercase">Unit Count: ${x.qty} | @ ${formatCurrency(x.cost)}</div>
+                    </div>
+                    <div class="flex items-center gap-6">
+                        <div class="text-right">
+                             <div class="text-[8px] font-black text-slate-300 uppercase mb-1">Extension</div>
+                             <div class="font-black text-sm text-indigo-600 font-mono italic">${formatCurrency(x.qty * x.cost)}</div>
+                        </div>
+                        <button onclick="window.tempItems.splice(${i},1);renderPOList()" class="w-10 h-10 rounded-full bg-rose-50 text-rose-500 flex items-center justify-center hover:bg-rose-500 hover:text-white transition-all transform hover:rotate-90">
+                           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        </button>
+                    </div>
+                 </div>`).join('');
+        };
+
+        window.savePOPrep = async () => {
+            if (window.tempItems.length === 0) return alert("System Critical: Manifest payload is empty.");
+            const sup = document.getElementById('po-s').value;
+            if (!sup) return alert("System Critical: Supply partner context missing.");
+            confirmAction("Confirm execution of this Purchase Order?", "savePOExec", sup);
+        };
+
+        window.savePOExec = async (sup) => {
+            const id = await generateID('PO', 'docs');
+            try {
+                await setDoc(doc(db, "docs", id), {
+                    docNo: id, type: 'PO', supplier: sup, items: window.tempItems, status: 'PENDING', date: new Date().toISOString(), loc: session.loc
+                });
+                loadPO();
+                showCreatedDoc(id, 'Strategic Purchase Order');
+                setTimeout(() => { window.viewOldPO(id); }, 800);
+            } catch (e) {
+                console.error("PO Fail:", e);
+                alert("Error: " + e.message);
+            }
+        };
+
+        window.cancelPOExec = async (id) => {
+            await updateDoc(doc(db, "docs", id), { status: 'CANCELLED' });
+            closeModal(); 
+            loadPO();
+        };
+        // === 9. GOODS RECEIVED NOTE (GRN) ===
+        async function loadGRN() {
+            const raw = await getDocs(query(collection(db, "docs"), where("type", "==", "GRN"), where("loc", "==", session.loc)));
+            const filtered = raw.docs.sort((a, b) => new Date(b.data().date) - new Date(a.data().date));
+            const snap = { docs: filtered };
+
+            // Stats
+            let monthlyIn = 0;
+            const now = new Date();
+            filtered.forEach(d => {
+                const data = d.data();
+                const dDate = new Date(data.date);
+                if(dDate.getMonth() === now.getMonth() && dDate.getFullYear() === now.getFullYear()) {
+                    monthlyIn++;
+                }
+            });
+
+            document.getElementById('app').innerHTML = `
+                <div class="animate-fade space-y-8">
+                    <!-- Progress Summary -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                        <div class="col-span-1 md:col-span-2 card p-8 bg-emerald-600 text-white shadow-2xl shadow-emerald-100 relative overflow-hidden">
+                            <div class="relative z-10">
+                                <h3 class="text-4xl font-black tracking-tighter mb-2 italic">Reception Logistics</h3>
+                                <p class="text-[11px] font-black uppercase opacity-60 tracking-[0.3em]">Operational Stock Induction Center</p>
+                            </div>
+                            <div class="absolute -right-8 -bottom-8 opacity-10 rotate-12 scale-150">📥</div>
+                        </div>
+                        <div class="card p-6 bg-white border-2 border-slate-100 flex flex-col justify-center">
+                            <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Period Inbound</div>
+                            <div class="text-3xl font-black text-emerald-600">${monthlyIn}</div>
+                            <div class="text-[9px] font-bold text-slate-300">Total documents this month</div>
+                        </div>
+                        <div class="card p-6 bg-slate-900 border-2 border-slate-900 flex flex-col justify-center text-white">
+                            <button onclick="createGRN()" class="w-full group flex flex-col items-center gap-2">
+                                <div class="w-12 h-12 bg-white/10 rounded-full flex items-center justify-center text-2xl group-hover:bg-emerald-500 group-hover:scale-110 transition-all">+</div>
+                                <span class="text-[10px] font-black uppercase tracking-[0.2em]">New Stock Induction</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Strategic Connection: Approved Orders Pending Induction -->
+                    <div id="grn-pending-po" class="space-y-4">
+                         <div class="flex items-center justify-between px-2">
+                             <h4 class="font-black text-[10px] uppercase text-emerald-600 tracking-[0.3em] italic flex items-center gap-2">
+                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                 Authorized Orders Awaiting Reception
+                             </h4>
+                         </div>
+                         <div id="grn-waiting-ledger" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                             <div class="col-span-full py-12 text-center bg-white border-2 border-dashed border-slate-100 rounded-[2rem] text-slate-300 italic text-[10px] uppercase font-black tracking-widest animate-pulse">Syncing Procurement Authority...</div>
+                         </div>
+                    </div>
+
+                    <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+                        <div class="flex items-center gap-4">
+                             <div class="flex gap-1 p-1 bg-slate-200/50 rounded-xl">
+                                <button onclick="window.filterGRNList('ALL')" class="grn-f-btn bg-emerald-600 text-white px-5 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all shadow-md">History Ledger</button>
+                                <button onclick="window.filterGRNList('PO')" class="grn-f-btn px-5 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all text-slate-500 hover:text-emerald-600">PO Linked</button>
+                                <button onclick="window.filterGRNList('DIRECT')" class="grn-f-btn px-5 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all text-slate-500 hover:text-emerald-600">Direct Entry</button>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                            <div class="flex-1 md:flex-none bg-white p-2 border-2 border-slate-100 rounded-2xl flex items-center group focus-within:border-emerald-500 transition-all">
+                                <input id="grn-find" placeholder="Search Document / INV..." class="border-none bg-transparent px-4 py-2 text-sm w-full md:w-48 focus:ring-0 font-bold text-slate-700">
+                                <button onclick="viewOldGRNByNo()" class="bg-slate-900 text-white px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-emerald-600 transition shadow-lg">Scan Archive</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card overflow-hidden border border-slate-200 shadow-sm bg-white rounded-[2rem]">
+                        <table class="w-full text-left" id="grn-table">
+                            <thead class="bg-slate-50 border-b border-slate-100 uppercase text-[10px] font-black text-slate-400 tracking-widest">
+                                <tr>
+                                    <th class="p-6">GRN Reference</th>
+                                    <th class="p-6">Traceability (Ref)</th>
+                                    <th class="p-6">Invoice Context</th>
+                                    <th class="p-6">System Date</th>
+                                    <th class="p-6 text-right">Strategic Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-50">
+                                ${snap.docs.map(d => {
+                                    const data = d.data();
+                                    const isPO = !!data.poRef && data.poRef !== 'DIRECT';
+                                    return `
+                                    <tr class="hover:bg-slate-50/50 transition-colors group grn-row" data-type="${isPO ? 'PO' : 'DIRECT'}">
+                                        <td class="p-6">
+                                            <div class="font-black text-emerald-600 text-base font-mono">${data.docNo}</div>
+                                            <div class="text-[9px] text-slate-400 font-bold uppercase tracking-widest mt-1">${data.invItems?.length || 0} Registered Batches</div>
+                                        </td>
+                                        <td class="p-6">
+                                            <div class="flex items-center gap-2">
+                                                ${isPO ? `<span class="bg-blue-50 text-blue-600 p-1 rounded-md text-[8px] font-black">PO</span>` : `<span class="bg-amber-50 text-amber-600 p-1 rounded-md text-[8px] font-black">DIR</span>`}
+                                                <div class="font-black text-slate-700 font-mono text-xs uppercase">${data.poRef || 'Direct Induction'}</div>
+                                            </div>
+                                        </td>
+                                        <td class="p-6">
+                                            <div class="font-black text-slate-800 text-sm">${data.invoice}</div>
+                                            <div class="text-[9px] font-bold text-slate-300 uppercase mt-1">${data.supplier}</div>
+                                        </td>
+                                        <td class="p-6">
+                                            <div class="text-xs font-bold text-slate-600">${new Date(data.date).toLocaleDateString()}</div>
+                                            <div class="text-[9px] text-slate-300 font-medium">${new Date(data.date).toLocaleTimeString()}</div>
+                                        </td>
+                                        <td class="p-6 text-right">
+                                            <button onclick="viewOldGRN('${d.id}')" class="bg-slate-50 text-slate-400 px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-[0.2em] hover:bg-emerald-600 hover:text-white transition-all shadow-sm">Audit Details</button>
+                                        </td>
+                                    </tr>`;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                        ${snap.docs.length === 0 ? '<div class="p-24 text-center text-slate-300 font-black uppercase tracking-[0.3em] italic text-xs">Zero Receptions Logged</div>' : ''}
+                    </div>
+                </div>`;
+
+            window.filterGRNList = (f) => {
+                const btns = document.querySelectorAll('.grn-f-btn');
+                btns.forEach(b => {
+                    b.classList.remove('bg-emerald-600', 'text-white', 'shadow-md');
+                    b.classList.add('text-slate-500');
+                });
+                if(event) {
+                    event.target.classList.add('bg-emerald-600', 'text-white', 'shadow-md');
+                    event.target.classList.remove('text-slate-500');
+                }
+
+                const rows = document.querySelectorAll('.grn-row');
+                rows.forEach(r => {
+                    if (f === 'ALL') r.style.display = '';
+                    else r.style.display = r.dataset.type === f ? '' : 'none';
+                });
+            };
+
+            // Post-render initialization
+            window.syncGRNPendingOrders();
+        }
+
+        window.syncGRNPendingOrders = async () => {
+            const poSnap = await getDocs(query(collection(db, "docs"), where("type", "==", "PO"), where("status", "==", "APPROVED")));
+            const ledger = document.getElementById('grn-waiting-ledger');
+            if(!ledger) return;
+            if(poSnap.empty) {
+                ledger.innerHTML = `<div class="col-span-full py-10 text-center bg-slate-50 border border-slate-100 rounded-[2rem] text-slate-400 font-bold text-[10px] uppercase tracking-widest">No pending authorizations</div>`;
+            } else {
+                ledger.innerHTML = poSnap.docs.map(d => {
+                    const data = d.data();
+                    return `
+                    <div onclick="window.goToGRNFromPO('${data.docNo}')" class="bg-white p-5 rounded-3xl border-2 border-slate-50 shadow-sm hover:shadow-xl hover:border-emerald-500 transition-all cursor-pointer group relative overflow-hidden">
+                        <div class="absolute right-0 top-0 p-3 opacity-5 group-hover:opacity-20 transition-all"><svg class="w-12 h-12" fill="currentColor" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zM6 20V4h7v5h5v11H6z"/></svg></div>
+                        <div class="flex items-center gap-4">
+                            <div class="w-10 h-10 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-black text-[10px]">PO</div>
+                            <div class="flex-1">
+                                <div class="font-black text-slate-800 text-sm truncate uppercase tracking-tighter">${data.docNo}</div>
+                                <div class="text-[9px] font-bold text-slate-400 uppercase truncate">${data.supplier}</div>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-[9px] font-black text-emerald-500 uppercase">${data.items?.length || 0} Lines</div>
+                                <div class="text-[8px] font-bold text-slate-300 uppercase">${new Date(data.date).toLocaleDateString()}</div>
+                            </div>
+                        </div>
+                    </div>`;
+                }).join('');
+            }
+        };
+
+        window.goToGRNFromPO = (no) => {
+            createGRN();
+            setTimeout(() => {
+                const input = document.getElementById('grn-po');
+                if(input) {
+                    input.value = no;
+                    loadGRNFromPO();
+                }
+            }, 300);
+        };
+
+
+        window.createGRN = async () => {
+            const rawItems = await getDocs(collection(db, "items"));
+            const items = rawItems.docs.map(x => x.data());
+            const rawSups = await getDocs(collection(db, "suppliers"));
+            const sups = rawSups.docs.map(x => x.data().name);
+
+            window.grnItems = []; // For Direct GRN
+            window.tempPOId = null;
+
+            const canDirect = (session.perms || []).includes('grn_direct') || session.isAdmin;
+
+            openModal("Strategic Logistics Selection", `
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 p-4">
+                    <div onclick="startPOInduction()" class="p-8 border-4 border-slate-100 rounded-[2.5rem] hover:border-indigo-500 hover:bg-indigo-50 transition-all cursor-pointer group text-center active:scale-95 shadow-sm">
+                         <div class="text-5xl mb-6 grayscale group-hover:grayscale-0 transition group-hover:scale-110">🛡️</div>
+                         <h4 class="text-xl font-black text-slate-800 mb-2 uppercase tracking-tight">Verified Induction</h4>
+                         <p class="text-xs text-slate-400 font-bold leading-relaxed">System-linked authorization via existing Purchase Order protocol.</p>
+                    </div>
+                    ${canDirect ? `
+                        <div onclick="startDirectInduction()" class="p-8 border-4 border-slate-100 rounded-[2.5rem] hover:border-amber-500 hover:bg-amber-50 transition-all cursor-pointer group text-center active:scale-95 shadow-sm">
+                             <div class="text-5xl mb-6 grayscale group-hover:grayscale-0 transition group-hover:scale-110">⚡</div>
+                             <h4 class="text-xl font-black text-slate-800 mb-2 uppercase tracking-tight">Direct Entry</h4>
+                             <p class="text-xs text-slate-400 font-bold leading-relaxed">Bypass PO authorization for immediate warehouse logistics updates.</p>
+                        </div>
+                    ` : `
+                        <div class="p-8 border-4 border-slate-50/50 rounded-[2.5rem] bg-slate-50 opacity-50 text-center grayscale select-none">
+                             <div class="text-5xl mb-6">🔒</div>
+                             <h4 class="text-xl font-black text-slate-400 mb-2 uppercase tracking-tight">Access Restricted</h4>
+                             <p class="text-[10px] text-slate-300 font-bold leading-relaxed">Bypass protocol requires 'grn_direct' authorization.</p>
+                        </div>
+                    `}
+                </div>
+            `, `<button onclick="closeModal()" class="w-full bg-slate-100 text-slate-400 p-4 rounded-2xl font-black text-[10px] uppercase tracking-widest">Abandon Mission</button>`);
+
+            window.startPOInduction = () => {
+                openModal("Verified Stock Induction", `
+                    <div class="space-y-6">
+                        <div class="bg-slate-50 p-6 rounded-3xl border border-slate-200">
+                            <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 italic">Security Context: Order Identity</label>
+                            <div class="flex gap-4">
+                                <input id="grn-po" placeholder="PO-000001" class="flex-1 p-5 border-2 border-slate-100 rounded-2xl bg-white font-black text-slate-800 shadow-inner outline-none focus:border-indigo-400 transition-all text-2xl font-mono uppercase">
+                                <button onclick="loadGRNFromPO()" class="bg-indigo-600 text-white px-8 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-100 transition-all transform active:scale-95">VERIFY AUTH</button>
+                            </div>
+                        </div>
+                        <div id="grn-area" class="hidden animate-fade space-y-6">
+                             <!-- Item rows injected here -->
+                             <div class="bg-slate-900/5 p-6 rounded-3xl border border-slate-200">
+                                 <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Verification Details</label>
+                                 <div class="grid grid-cols-2 gap-4 mb-4">
+                                     <div class="bg-white p-4 rounded-2xl border border-slate-200"><div class="text-[8px] font-black opacity-30 uppercase">Origin PO</div><div id="g-po" class="font-black text-indigo-900 text-sm font-mono"></div></div>
+                                     <div class="bg-white p-4 rounded-2xl border border-slate-200"><div class="text-[8px] font-black opacity-30 uppercase">Supply Partner</div><div id="g-sup" class="font-black text-indigo-900 text-sm uppercase truncate"></div></div>
+                                 </div>
+                                 <input id="g-inv" class="w-full p-4 border-2 border-slate-100 rounded-2xl bg-white font-black text-slate-800 shadow-inner outline-none focus:border-emerald-400 tracking-widest uppercase font-mono" placeholder="INVOICE REF #">
+                             </div>
+                             <div id="g-items" class="space-y-4 max-h-[400px] overflow-auto custom-scrollbar pr-2 pb-6"></div>
+                             <button onclick="saveGRNPrep()" class="w-full bg-slate-900 text-white p-6 rounded-[2.5rem] font-black text-xl shadow-2xl hover:bg-emerald-600 transition-all transform active:scale-95 flex items-center justify-center gap-4">
+                                <span>AUTHORIZE INDUCTION</span>
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                             </button>
+                        </div>
+                    </div>
+                `, `<button onclick="createGRN()" class="w-full bg-slate-100 text-slate-400 p-4 rounded-2xl font-black text-[10px] uppercase tracking-widest">Return to Selector</button>`);
+            };
+
+            window.startDirectInduction = () => {
+                const itemOptions = items.map(i => `<option value="${i.code}" data-name="${i.name}" data-pack="${i.packSize || 1}" data-cost="${i.cost}" data-sell="${i.sell}">${i.name} (${i.code})</option>`).join('');
+                const supOptions = sups.map(s => `<option value="${s}">${s}</option>`).join('');
+
+                openModal("Strategic Direct Induction (Bypass PO)", `
+                    <div class="space-y-6">
+                        <div class="bg-amber-50 border-2 border-amber-100 p-6 rounded-3xl grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-[10px] font-black text-amber-600 uppercase tracking-widest mb-1.5 ml-1">Logistics Partner</label>
+                                <select id="dg-sup" class="w-full p-3 bg-white rounded-xl border-none font-black text-slate-700 outline-none text-xs uppercase">${supOptions}</select>
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-black text-amber-600 uppercase tracking-widest mb-1.5 ml-1">Invoice Identity</label>
+                                <input id="dg-inv" class="w-full p-3 bg-white rounded-xl border-none font-black text-slate-700 outline-none text-xs uppercase font-mono tracking-widest" placeholder="INV/000000">
+                            </div>
+                        </div>
+
+                        <div class="p-6 border-2 border-slate-100 rounded-3xl bg-slate-50/50 space-y-4">
+                            <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1 italic">Asset Allocation</label>
+                            <select id="dg-item" class="w-full p-4 bg-white rounded-2xl border-none shadow-sm font-black text-slate-700 outline-none text-sm">${itemOptions}</select>
+                            <div class="flex gap-4">
+                                <div class="flex-1">
+                                    <label class="block text-[9px] font-black text-slate-300 uppercase tracking-widest mb-1 ml-2">Qty Units</label>
+                                    <input id="dg-qty" type="number" placeholder="Count" class="w-full p-4 bg-white rounded-2xl border-none shadow-sm font-black text-xl text-emerald-600 outline-none text-center">
+                                </div>
+                                <button onclick="addDirectGRNItem()" class="bg-slate-900 text-white px-10 rounded-2xl font-black text-xl shadow-xl hover:bg-emerald-600 transition-all transform active:scale-95">+</button>
+                            </div>
+                        </div>
+
+                        <div id="dg-list" class="space-y-3 max-h-60 overflow-auto custom-scrollbar">
+                             <div class="p-16 text-center border-4 border-dashed border-slate-50 rounded-[3rem] text-slate-200 uppercase font-black tracking-widest text-[10px] italic">Manifest Empty</div>
+                        </div>
+
+                        <button onclick="saveDirectGRNPrep()" class="w-full bg-emerald-600 text-white p-6 rounded-[2.5rem] font-black text-xl shadow-2xl hover:bg-slate-900 transition-all transform active:scale-95 flex items-center justify-center gap-4">
+                            <span>COMMIT DIRECT INDUCTION</span>
+                             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                        </button>
+                    </div>
+                `, `<button onclick="createGRN()" class="w-full bg-slate-100 text-slate-400 p-4 rounded-2xl font-black text-[10px] uppercase tracking-widest">Return to Selector</button>`);
+                
+                window.grnItems = [];
+            };
+
+            window.addDirectGRNItem = () => {
+                const iSel = document.getElementById('dg-item');
+                const code = iSel.value;
+                const name = iSel.options[iSel.selectedIndex].dataset.name;
+                const q = parseFloat(document.getElementById('dg-qty').value) || 0;
+                
+                if (q <= 0) return alert("Strategic Error: Asset allocation must be positive.");
+                
+                const existing = window.grnItems.find(x => x.code === code);
+                if (existing) existing.q += q;
+                else window.grnItems.push({ code, name, q });
+
+                renderDirectGRNList();
+                document.getElementById('dg-qty').value = '';
+            };
+
+            window.renderDirectGRNList = () => {
+                const list = document.getElementById('dg-list');
+                if(window.grnItems.length === 0) {
+                    list.innerHTML = `<div class="p-16 text-center border-4 border-dashed border-slate-50 rounded-[3rem] text-slate-200 uppercase font-black tracking-widest text-[10px] italic">Manifest Empty</div>`;
+                    return;
+                }
+                list.innerHTML = window.grnItems.map((x, i) => `
+                    <div class="flex justify-between items-center bg-white p-5 border-2 border-slate-50 rounded-3xl shadow-sm hover:shadow-xl transition-all group overflow-hidden relative">
+                        <div class="absolute left-0 top-0 bottom-0 w-1.5 bg-emerald-500 opacity-0 group-hover:opacity-100 transition-all"></div>
+                        <div>
+                             <div class="font-black text-slate-800 text-sm">${x.name}</div>
+                             <div class="text-[9px] font-black text-slate-300 font-mono tracking-tighter uppercase mt-1">CD: ${x.code}</div>
+                        </div>
+                        <div class="flex items-center gap-6">
+                            <div class="text-right">
+                                 <div class="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-1">Payload</div>
+                                 <div class="font-black text-2xl text-emerald-600 leading-none">${x.q}</div>
+                            </div>
+                            <button onclick="window.grnItems.splice(${i},1);renderDirectGRNList()" class="w-10 h-10 rounded-full bg-rose-50 text-rose-500 flex items-center justify-center hover:bg-rose-500 hover:text-white transition-all transform hover:rotate-90">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
+                            </button>
+                        </div>
+                    </div>`).join('');
+            };
+
+            window.saveDirectGRNPrep = () => {
+                if (window.grnItems.length === 0) return alert("System Critical: Manifest payload is empty.");
+                const inv = document.getElementById('dg-inv').value;
+                const sup = document.getElementById('dg-sup').value;
+                if (!inv) return alert("System Critical: Invoice reference required for legal traceability.");
+                
+                // For direct induction, we inject them into the standard GRN format but marked as DIRECT
+                // We'll use a virtual 'DIRECT' PO ref
+                window.tempGRNData = { 
+                    invItems: window.grnItems.map(x => ({ 
+                        code: x.code, 
+                        q: x.q, 
+                        f: 0, 
+                        exp: new Date().toISOString().split('T')[0], // Default today if unknown
+                         cost: items.find(z => z.code === x.code)?.cost || 0,
+                        sell: items.find(z => z.code === x.code)?.sell || 0
+                    })), 
+                    invoice: inv, 
+                    poRef: 'DIRECT', 
+                    supplier: sup 
+                };
+                window.confirmAction("Authorize DIRECT stock induction for INV " + inv + "?", "saveGRNExec");
+            };
+        };
+
+        window.loadGRNFromPO = async () => {
+            const val = document.getElementById('grn-po').value.trim();
+            if (!val) return alert("Security Context: Authorization context ID required.");
+            const n = val.toUpperCase();
+            
+            // Multi-pattern identifier matching (Exact No or Internal ID)
+            let poSnap = await getDocs(query(collection(db, "docs"), where("docNo", "==", n)));
+            if (poSnap.empty) poSnap = await getDocs(query(collection(db, "docs"), where("docNo", "==", 'PO' + n)));
+            
+            const matches = poSnap.docs.filter(d => d.data().type === 'PO' && d.data().status !== 'CANCELLED');
+            if (matches.length === 0) return alert("System Log: No authorized PO found matching " + n);
+            
+            const poDoc = matches[0];
+            const po = poDoc.data();
+            
+            if (po.status === 'PENDING') return alert("Authorization Required: This Purchase Order is currently PENDING. It must be APPROVED before induction.");
+            if (po.status === 'RECEIVED') return alert("Lifecycle Compliance: This order has already been fully inducted into inventory.");
+            
+            window.tempPOId = poDoc.id;
+            document.getElementById('grn-area').classList.remove('hidden');
+            const placeholder = document.getElementById('grn-placeholder');
+            if(placeholder) placeholder.classList.add('hidden');
+
+            document.getElementById('g-po').innerText = po.docNo;
+            document.getElementById('g-sup').innerText = po.supplier;
+            document.getElementById('g-inv').focus();
+
+            const itemsSnap = await getDocs(collection(db, "items"));
+            const allItems = itemsSnap.docs.map(d => d.data());
+
+            const manifestHtml = (po.items || []).map((x, i) => {
+                const itm = allItems.find(z => z.code === x.code) || {};
+                const packSz = parseFloat(itm.packSize || 1);
+                
+                return `
+                 <div class="bg-white border-2 border-slate-50 p-6 rounded-[2rem] shadow-sm hover:shadow-xl hover:border-emerald-200 transition-all group itm-row" data-code="${x.code}" data-packsize="${packSz}">
+                    <div class="flex justify-between items-start mb-6">
+                        <div>
+                            <div class="font-black text-slate-800 text-base leading-tight">${itm.name || x.name || 'Unknown Asset'}</div>
+                            <div class="text-[10px] text-slate-400 font-mono tracking-tighter uppercase mt-1">CD: ${x.code} | Order Expectation: ${x.qty} Units</div>
+                        </div>
+                        <span class="bg-emerald-50 text-emerald-600 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest border border-emerald-100">AUTHORIZED</span>
+                    </div>
+
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div class="bg-slate-50 p-3 rounded-2xl">
+                            <label class="block text-[9px] font-black uppercase text-slate-400 tracking-widest mb-1.5 ml-1">Received (Packs)</label>
+                            <input type="number" class="w-full bg-transparent border-none p-0 font-black text-lg text-emerald-600 focus:ring-0 g-qty" value="${x.qty}" oninput="calcUnitPrices(this)">
+                        </div>
+                         <div class="bg-slate-50 p-3 rounded-2xl">
+                            <label class="block text-[9px] font-black uppercase text-slate-400 tracking-widest mb-1.5 ml-1">Bonus (Packs)</label>
+                            <input type="number" class="w-full bg-transparent border-none p-0 font-black text-lg text-blue-500 focus:ring-0 g-free" value="0" oninput="calcUnitPrices(this)">
+                        </div>
+                        <div class="col-span-2 bg-slate-100 p-3 rounded-2xl border border-slate-200">
+                            <label class="block text-[9px] font-black uppercase text-slate-400 tracking-widest mb-1.5 ml-1">Batch Expiry</label>
+                            <input type="date" class="w-full bg-transparent border-none p-0 font-black text-sm text-slate-700 focus:ring-0 g-exp">
+                        </div>
+                        
+                        <div class="bg-orange-50 p-3 rounded-2xl border border-orange-100">
+                            <label class="block text-[9px] font-black uppercase text-orange-400 tracking-widest mb-1.5 ml-1">Pack Cost</label>
+                            <input type="number" class="w-full bg-transparent border-none p-0 font-black text-lg text-orange-600 focus:ring-0 g-pcost" value="${(x.cost || itm.cost || 0) * packSz}" oninput="calcUnitPrices(this)">
+                        </div>
+                        <div class="bg-emerald-50 p-3 rounded-2xl border border-emerald-100">
+                            <label class="block text-[9px] font-black uppercase text-emerald-400 tracking-widest mb-1.5 ml-1">Pack Sell</label>
+                            <input type="number" class="w-full bg-transparent border-none p-0 font-black text-lg text-emerald-600 focus:ring-0 g-psell" value="${(itm.sell || 0) * packSz}" oninput="calcUnitPrices(this)">
+                        </div>
+
+                         <div class="col-span-2 bg-slate-900/5 p-3 rounded-2xl border border-slate-200 text-center">
+                            <div class="flex justify-around items-center h-full">
+                                <div>
+                                    <div class="text-[8px] font-black text-slate-400 uppercase">Unit Cost</div>
+                                    <div class="font-black text-slate-800 text-xs g-ucost">${x.cost || itm.cost || 0}</div>
+                                </div>
+                                <div class="w-px h-6 bg-slate-200"></div>
+                                <div>
+                                    <div class="text-[8px] font-black text-slate-400 uppercase">Unit Sell</div>
+                                    <div class="font-black text-emerald-600 text-xs g-usell">${itm.sell || 0}</div>
+                                </div>
+                                <div class="w-px h-6 bg-slate-200"></div>
+                                <div>
+                                    <div class="text-[8px] font-black text-slate-400 uppercase">Total Qty</div>
+                                    <div class="font-black text-emerald-600 text-xs g-utot">${x.qty * packSz}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                 </div>`;
+            }).join('');
+            
+            document.getElementById('g-items').innerHTML = manifestHtml || `<div class="p-10 text-center text-slate-400 font-black uppercase">No items found in PO!</div>`;
+        };
+
+        window.viewOldGRNByNo = async () => {
+            const n = document.getElementById('grn-find').value.trim().toUpperCase();
+            if (!n) return alert("Security Context: Search identity required.");
+            const snap = await getDocs(query(collection(db, "docs"), where("docNo", "==", n), where("type", "==", "GRN"), where("loc", "==", session.loc)));
+            if (snap.empty) return alert("System Log: No reception record matching " + n + " at this location.");
+            window.viewOldGRN(snap.docs[0].id);
+        };
+
+        window.calcUnitPrices = (el) => {
+            const row = el.closest('.itm-row');
+            const ps = parseFloat(row.dataset.packsize || 1);
+            const rcv = parseFloat(row.querySelector('.g-qty').value) || 0;
+            const free = parseFloat(row.querySelector('.g-free').value) || 0;
+            const pCost = parseFloat(row.querySelector('.g-pcost').value) || 0;
+            const pSell = parseFloat(row.querySelector('.g-psell').value) || 0;
+
+            const uCost = ps > 0 ? (pCost / ps).toFixed(2) : 0;
+            const uSell = ps > 0 ? (pSell / ps).toFixed(2) : 0;
+            const uTot = Math.round((rcv + free) * ps);
+
+            row.querySelector('.g-ucost').innerText = uCost;
+            row.querySelector('.g-usell').innerText = uSell;
+            row.querySelector('.g-utot').innerText = uTot;
+        };
+
+        window.saveGRNPrep = () => {
+            const inv = document.getElementById('g-inv').value;
+            if (!inv) return alert("System Notification: Supplier invoice reference required for audit trail.");
+
+            const rows = document.querySelectorAll('#g-items > div');
+            const validItems = [];
+
+            for (let r of rows) {
+                const code = r.dataset.code;
+                const ps = parseFloat(r.dataset.packsize || 1);
+                const rcvPacks = parseFloat(r.querySelector('.g-qty').value) || 0;
+                const freePacks = parseFloat(r.querySelector('.g-free').value) || 0;
+                const exp = r.querySelector('.g-exp').value;
+                const costPack = parseFloat(r.querySelector('.g-pcost').value) || 0;
+                const sellPack = parseFloat(r.querySelector('.g-psell').value) || 0;
+
+                const uCost = ps > 0 ? (costPack / ps) : 0;
+                const uSell = ps > 0 ? (sellPack / ps) : 0;
+
+                if (rcvPacks > 0 && !exp) return alert("Batch Compliance Error: Expiry date required for asset " + code);
+                if (rcvPacks > 0) validItems.push({ code, q: rcvPacks * ps, f: freePacks * ps, exp, cost: uCost, sell: uSell });
+            }
+
+            if (validItems.length === 0) return alert("System Notification: No items selected for reception.");
+
+            const ref = document.getElementById('g-po').innerText;
+            const sup = document.getElementById('g-sup').innerText || document.getElementById('g-sup-sel')?.value;
+            window.tempGRNData = { invItems: validItems, invoice: inv, poRef: ref, supplier: sup };
+
+            confirmAction("Finalize stock induction for GRN " + inv + "?", "saveGRNExec");
+        };
+
+        window.saveGRNExec = async () => {
+            const { invItems, invoice, poRef, supplier } = window.tempGRNData;
+            const id = await generateID('GRN', 'docs');
+            const batch = writeBatch(db);
+
+            for (let x of invItems) {
+                // Asset Price Update
+                const qI = query(collection(db, "items"), where("code", "==", x.code));
+                const sI = await getDocs(qI);
+                if (!sI.empty) {
+                    batch.update(sI.docs[0].ref, { cost: x.cost, sell: x.sell });
+                }
+
+                // Inventory Batch Creation
+                const stockRef = doc(collection(db, "stocks"));
+                batch.set(stockRef, { 
+                    itemCode: x.code, 
+                    loc: session.loc, 
+                    qty: (x.q + x.f), 
+                    exp: x.exp, 
+                    cost: x.cost,
+                    sell: x.sell,
+                    grn: id,
+                    date: new Date().toISOString() 
+                });
+
+                // Transaction Log
+                await logHistory(x.code, 'GRN', (x.q + x.f), id, supplier, session.loc);
+            }
+
+            // Document Serialization
+            const grnRef = doc(collection(db, "docs"), id);
+            batch.set(grnRef, { docNo: id, type: 'GRN', ref: poRef, invoice, items: invItems, date: new Date().toISOString(), loc: session.loc });
+
+            // Lifecycle Closure
+            if (window.tempPOId) batch.update(doc(db, "docs", window.tempPOId), { status: 'RECEIVED' });
+
+            await batch.commit();
+            loadGRN();
+            showCreatedDoc(id, 'Goods Induction Note (GRN)');
+            setTimeout(() => { window.viewOldGRN(id); }, 800);
+        };
+
+        window.viewOldGRN = async (id) => {
+            const dSnap = await getDoc(doc(db, "docs", id));
+            const d = dSnap.data();
+            
+            const rows = d.items.map(x => `
+                <tr class="border-b border-slate-100 group hover:bg-emerald-50/50 transition-all">
+                    <td class="p-4 font-black text-slate-700 font-mono text-xs">${x.code}</td>
+                    <td class="p-4 text-center">
+                         <div class="font-black text-slate-800 text-sm">${x.q}</div>
+                         <div class="text-[9px] text-slate-400 font-bold uppercase">Main</div>
+                    </td>
+                    <td class="p-4 text-center">
+                         <div class="font-black text-blue-500 text-sm">${x.f}</div>
+                         <div class="text-[9px] text-slate-400 font-bold uppercase">Bonus</div>
+                    </td>
+                    <td class="p-4 text-center font-bold text-rose-500 text-xs font-mono">${x.exp}</td>
+                    <td class="p-4 text-right font-black text-slate-800 text-xs">${formatCurrency(x.cost)}</td>
+                </tr>`).join('');
+
+            openModal(`Reception Audit: ${d.docNo}`, `
+                <div class="space-y-6">
+                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                         <div class="bg-slate-50 p-4 rounded-3xl border border-slate-200">
+                             <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Invoice</div>
+                             <div class="font-black text-slate-800 text-xs font-mono">${d.invoice}</div>
+                         </div>
+                         <div class="bg-slate-50 p-4 rounded-3xl border border-slate-200">
+                             <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">PO Link</div>
+                             <div class="font-black text-indigo-600 text-xs font-mono">${d.ref || 'DIRECT'}</div>
+                         </div>
+                         <div class="bg-emerald-50/50 p-4 rounded-3xl border border-emerald-100 text-right">
+                             <div class="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-1">Status</div>
+                             <div class="font-black text-emerald-600 text-[10px] uppercase tracking-widest">COMMITTED</div>
+                         </div>
+                         <div class="bg-slate-50 p-4 rounded-3xl border border-slate-200 text-right">
+                             <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Ledger Date</div>
+                             <div class="font-black text-slate-800 text-xs">${new Date(d.date).toLocaleDateString()}</div>
+                         </div>
+                    </div>
+
+                    <div class="border border-slate-200 rounded-[2rem] overflow-hidden shadow-sm">
+                        <table class="w-full text-left">
+                            <thead class="bg-slate-50 text-[10px] font-black uppercase text-slate-400 border-b border-slate-100 tracking-widest">
+                                <tr><th class="p-4">CD</th><th class="p-4 text-center">Qty</th><th class="p-4 text-center">Free</th><th class="p-4 text-center">Expiry</th><th class="p-4 text-right">Cost</th></tr>
+                            </thead>
+                            <tbody>${rows}</tbody>
+                        </table>
+                    </div>
+                </div>`, 
+                `<div class="flex gap-4 w-full">
+                    <button onclick="printGRN('${id}')" class="flex-1 bg-slate-900 text-white py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-emerald-600 transition shadow-xl">Reprint Document</button>
+                    <button onclick="closeModal()" class="px-8 bg-slate-100 text-slate-500 py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 transition">Close</button>
+                </div>`);
+        };
+
+        window.viewOldGRNByNo = async (nInput = null) => {
+            const n = nInput || document.getElementById('grn-find').value.trim();
+            if (!n) return alert("Security Context: Search criteria required.");
+            let snap = await getDocs(query(collection(db, "docs"), where("docNo", "==", n), where("type", "==", "GRN")));
+            if (snap.empty) {
+                snap = await getDocs(query(collection(db, "docs"), where("invoice", "==", n), where("type", "==", "GRN")));
+            }
+            if (snap.empty) return alert("System Log: No matching GRN found.");
+            viewOldGRN(snap.docs[0].id);
+        };
+
+        window.printGRN = async (id) => {
+            try {
+                const dSnap = await getDoc(doc(db, "docs", id));
+                const d = dSnap.data();
+                const allItemsSnap = await getDocs(collection(db, "items"));
+                const allItems = allItemsSnap.docs.map(x => x.data());
+                const cSnap = await getDoc(doc(db, "settings", "company"));
+                const c = cSnap.exists() ? cSnap.data() : { name: "PSS - Stock System", addr: "Prasatek System Solutions", tel: "0112 345 678" };
+
+                let netTotal = 0;
+                const rows = d.items.map((x, idx) => {
+                    const info = allItems.find(i => i.code === x.code) || { name: 'Unknown', packSize: 1 };
+                    const ps = parseFloat(info.packSize || 1);
+                    const costVal = (parseFloat(x.q) || 0) * (parseFloat(x.cost) || 0);
+                    netTotal += costVal;
+                    return `
+                        <tr>
+                            <td class="text-center">${idx + 1}</td>
+                            <td>${x.code}</td>
+                            <td><b>${info.name}</b><br><small>EXP: ${x.exp}</small></td>
+                            <td class="text-center">${ps}</td>
+                            <td class="text-center">${x.q}</td>
+                            <td class="text-center">${x.f || 0}</td>
+                            <td class="text-right">${formatCurrency(x.cost).replace('Rs ','')}</td>
+                            <td class="text-right">${formatCurrency(x.sell || 0).replace('Rs ','')}</td>
+                            <td class="text-right"><b>${formatCurrency(costVal).replace('Rs ','')}</b></td>
+                        </tr>`;
+                }).join('');
+
+                const w = window.open('', '', 'width=950,height=900');
+                w.document.write(`
+                    <html><head><title>GRN ${d.docNo}</title>
+                    <style>
+                        body { font-family: 'Segoe UI', Tahoma, sans-serif; padding: 40px; color: #1e293b; line-height: 1.6; }
+                        header { border-bottom: 4px solid #059669; padding-bottom: 20px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
+                        h1 { font-size: 32px; font-weight: 900; margin: 0; color: #059669; letter-spacing: -1px; }
+                        .co-details { text-align: right; }
+                        .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 40px; background: #f8fafc; padding: 25px; border-radius: 20px; border: 1px solid #e2e8f0; }
+                        .meta-box h4 { margin: 0 0 5px; text-transform: uppercase; font-size: 10px; color: #64748b; tracking: 1px; }
+                        .meta-box p { margin: 0; font-weight: 800; font-size: 14px; }
+                        table { width: 100%; border-collapse: collapse; margin-bottom: 30px; }
+                        th { background: #059669; color: white; padding: 12px; text-transform: uppercase; font-size: 11px; font-weight: 900; border: 1px solid #059669; }
+                        td { padding: 12px; border: 1px solid #e2e8f0; font-size: 12px; }
+                        .text-right { text-align: right; }
+                        .text-center { text-align: center; }
+                        .grand-total { float: right; width: 300px; padding: 20px; background: #ecfdf5; border-radius: 15px; border: 2px solid #059669; }
+                        .footer { margin-top: 100px; border-top: 1px dashed #cbd5e1; padding-top: 20px; text-align: center; font-size: 10px; color: #94a3b8; }
+                    </style>
+                    </head><body>
+                        <header>
+                            <div class="co-details" style="text-align:left; display:flex; align-items:center; gap:15px;">
+                                <img src="logo.png" style="height:60px; object-fit:contain;">
+                                <div>
+                                    <div style="font-size:42px; font-weight:900; color:#1e293b; line-height:1;">${c.name}</div>
+                                    <div style="font-size:14px; font-weight:600; color:#64748b; margin-top:5px;">${c.addr} | ${c.tel}</div>
+                                </div>
+                            </div>
+                            <div style="text-align:right;">
+                                <h1 style="font-size:24px; font-weight:900; color:#059669; margin:0; text-transform:uppercase;">GOODS RECEIVED NOTE</h1>
+                                <p style="margin:5px 0; font-weight:700; color:#94a3b8; font-size:12px;">Operational Induction Ledger</p>
+                            </div>
+                        </header>
+                        <div class="meta">
+                            <div class="meta-box"><h4>Document Identity</h4><p>${d.docNo}</p></div>
+                            <div class="meta-box"><h4>Invoice Link</h4><p>${d.invoice}</p></div>
+                            <div class="meta-box"><h4>Reception Date</h4><p>${new Date(d.date).toLocaleString()}</p></div>
+                            <div class="meta-box"><h4>Origin Authority</h4><p>${d.ref || 'DIRECT INDUCTION'}</p></div>
+                            <div class="meta-box"><h4>Station</h4><p>${session.loc}</p></div>
+                            <div class="meta-box"><h4>Authorized By</h4><p>${session.user}</p></div>
+                        </div>
+                        <table>
+                            <thead><tr><th>#</th><th>Code</th><th>Item Name</th><th class="text-center">Pack</th><th class="text-center">Qty</th><th class="text-center">Free</th><th class="text-right">Cost</th><th class="text-right">Sell</th><th class="text-right">Total</th></tr></thead>
+                            <tbody>${rows}</tbody>
+                        </table>
+                        <div class="grand-total">
+                            <div style="display:flex; justify-content:space-between; font-weight:900; font-size:18px;">
+                                <span>NET PAYABLE</span>
+                                <span style="color:#059669;">${formatCurrency(netTotal)}</span>
+                            </div>
+                        </div>
+                        <div style="clear:both;"></div>
+                        <div class="footer">A Product by Prasatek System Solutions | Document Audit ID: ${d.docNo}</div>
+                    </body></html>
+                `);
+                w.document.close();
+                w.focus();
+                setTimeout(() => { w.print(); }, 1000);
+            } catch (e) { console.error(e); alert("Print Failure: " + e.message); }
+        };
+
+        // === 9.5 PURCHASE RETURN (PRN) ===
+        async function loadPRN() {
+            const raw = await getDocs(query(collection(db, "docs"), where("type", "==", "PRN"), where("loc", "==", session.loc)));
+            const prnDocs = raw.docs.sort((a, b) => new Date(b.data().date) - new Date(a.data().date));
+
+            document.getElementById('app').innerHTML = `
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-8">
+                    <div class="flex items-center gap-4">
+                        <div class="w-16 h-16 bg-rose-600 text-white rounded-2xl flex items-center justify-center text-4xl shadow-2xl shadow-rose-200">🔙</div>
+                        <div>
+                            <h3 class="font-black text-3xl text-slate-800 tracking-tight">Stock Returns (PRN)</h3>
+                            <p class="text-slate-500 font-medium italic">Discharge & Claim Settlements</p>
+                        </div>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                        <div class="flex-1 md:flex-none bg-white p-2 rounded-2xl border border-slate-200 shadow-xl flex items-center">
+                            <input id="prn-find" placeholder="ID: PRN-0000..." class="border-none bg-transparent px-4 py-2 text-sm w-full md:w-48 focus:ring-0 font-black text-slate-700">
+                            <button onclick="viewOldPRNByNo()" class="bg-rose-600 text-white px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-rose-700 transition active:scale-95 shadow-lg shadow-rose-200">Find</button>
+                        </div>
+                        <button onclick="createPRN()" class="bg-slate-900 border-2 border-slate-900 hover:bg-white hover:text-slate-900 text-white px-8 py-4 rounded-2xl font-black shadow-2xl transition-all transform active:scale-95 flex items-center gap-3">
+                            <span class="text-xl">+</span>
+                            <span class="uppercase tracking-widest text-[11px]">Initiate Return</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 gap-8">
+                    <div class="card overflow-hidden border border-slate-200 shadow-sm bg-white rounded-[2rem]">
+                        <div class="bg-slate-50 border-b border-slate-100 p-6 flex justify-between items-center">
+                            <h4 class="font-black text-[11px] uppercase text-slate-400 tracking-[0.2em] italic">Return Ledger</h4>
+                            <div class="flex gap-2">
+                                <span class="bg-rose-100 text-rose-600 px-3 py-1 rounded-full text-[9px] font-black uppercase">Inventory Correction</span>
+                            </div>
+                        </div>
+                        <table class="w-full text-left">
+                            <thead class="bg-white border-b border-slate-100 uppercase text-[10px] font-black text-slate-400 tracking-widest">
+                                <tr>
+                                    <th class="p-6">PRN Identity</th>
+                                    <th class="p-6">Supplier Channel</th>
+                                    <th class="p-6">Date Processed</th>
+                                    <th class="p-6">Asset Count</th>
+                                    <th class="p-6 text-right">Audit</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-50">
+                                ${prnDocs.map(d => `
+                                    <tr class="hover:bg-slate-50/50 transition-colors group">
+                                        <td class="p-6">
+                                            <div class="font-black text-rose-600 text-base font-mono">${d.data().docNo}</div>
+                                        </td>
+                                        <td class="p-6">
+                                            <div class="font-black text-slate-700 uppercase text-xs">${d.data().supplier}</div>
+                                        </td>
+                                        <td class="p-6 text-xs font-bold text-slate-500">
+                                            ${formatDate(d.data().date)}
+                                        </td>
+                                        <td class="p-6">
+                                            <span class="bg-slate-100 text-slate-600 px-3 py-1 rounded-lg text-[10px] font-black">${d.data().items?.length || 0} ITEMS</span>
+                                        </td>
+                                        <td class="p-6 text-right">
+                                            <button onclick="viewOldPRNByNo('${d.data().docNo}')" class="text-slate-400 hover:text-rose-600 font-black text-[10px] uppercase tracking-[0.2em] p-3 rounded-xl hover:bg-rose-50 transition-all">View Detail</button>
+                                        </td>
+                                    </tr>`).join('')}
+                            </tbody>
+                        </table>
+                        ${prnDocs.length === 0 ? '<div class="p-24 text-center text-slate-300 font-black uppercase tracking-[0.3em] italic text-xs">Zero Discharges Logged</div>' : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        window.viewOldPRNByNo = async (nInput = null) => {
+            const n = nInput || document.getElementById('prn-find').value.trim();
+            if (!n) return alert("Security Context: Document Identity Required.");
+
+            const snap = await getDocs(query(collection(db, "docs"), where("docNo", "==", n), where("type", "==", "PRN"), where("loc", "==", session.loc)));
+            if (snap.empty) return alert("System Log: No matching PRN found at this location.");
+            const d = snap.docs[0].data();
+
+            const rows = d.items.map(x => `
+                <tr class="border-b border-slate-100">
+                    <td class="p-4 font-black text-slate-700 font-mono text-xs">${x.code}</td>
+                    <td class="p-4">${x.name || '-'}</td>
+                    <td class="p-4 text-center font-black text-rose-600">${x.q}</td>
+                    <td class="p-4 text-center font-bold text-slate-400 text-xs font-mono">${x.exp}</td>
+                    <td class="p-4 text-right italic text-slate-500 text-xs">${x.reason || 'Not Specified'}</td>
+                </tr>`).join('');
+
+            openModal(`Return Audit: ${d.docNo}`, `
+                <div class="space-y-6">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="bg-rose-50/50 p-5 rounded-3xl border border-rose-100">
+                             <div class="text-[9px] font-black text-rose-400 uppercase tracking-widest mb-1">Supplier Entity</div>
+                             <div class="font-black text-rose-900 uppercase text-sm">${d.supplier}</div>
+                        </div>
+                        <div class="bg-slate-50 p-5 rounded-3xl border border-slate-200">
+                             <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Authorization Date</div>
+                             <div class="font-black text-slate-800 text-sm">${formatDate(d.date)}</div>
+                        </div>
+                    </div>
+
+                    <div class="border border-slate-200 rounded-[2rem] overflow-hidden shadow-sm">
+                        <table class="w-full text-left">
+                            <thead class="bg-slate-50 text-[10px] font-black uppercase text-slate-400 border-b border-slate-100 tracking-widest">
+                                <tr><th class="p-4">CD</th><th class="p-4">Label</th><th class="p-4 text-center">Qty</th><th class="p-4 text-center">Batch</th><th class="p-4 text-right">Context</th></tr>
+                            </thead>
+                            <tbody>${rows}</tbody>
+                        </table>
+                    </div>
+                </div>`, 
+                `<div class="flex gap-4 w-full">
+                    <button onclick="printPRN('${snap.docs[0].id}')" class="flex-1 bg-slate-900 text-white py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-rose-600 transition shadow-xl">Serialize Print</button>
+                    <button onclick="closeModal()" class="px-8 bg-slate-100 text-slate-500 py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest">Close</button>
+                </div>`);
+        };
+
+        window.printPRN = async (id) => {
+            try {
+                const dSnap = await getDoc(doc(db, "docs", id));
+                const d = dSnap.data();
+                const totalQty = d.items.reduce((acc, i) => acc + (parseFloat(i.q) || 0), 0);
+                const cSnap = await getDoc(doc(db, "settings", "company"));
+                const c = cSnap.exists() ? cSnap.data() : { name: "PSS - Stock System", addr: "Prasatek System Solutions", tel: "0112 345 678" };
+
+                const rows = d.items.map((item, idx) => `
+                    <tr>
+                        <td style="text-align:center">${idx + 1}</td>
+                        <td style="padding:12px; border-bottom:1px solid #eee;"><b>${item.name || item.code}</b><br><small>CD: ${item.code} | EXP: ${item.exp}</small></td>
+                        <td style="text-align:center; font-weight:bold;">${item.q}</td>
+                        <td style="text-align:right; font-style:italic; color:#64748b;">${item.reason || 'Product Defect / Expiry Return'}</td>
+                    </tr>
+                `).join('');
+
+                const w = window.open('', '', 'width=900,height=800');
+                w.document.write(`
+                    <html><head><title>PRN ${d.docNo}</title>
+                    <style>
+                        body { font-family: 'Segoe UI', Tahoma, sans-serif; padding: 40px; color: #1e293b; line-height: 1.6; }
+                        header { border-bottom: 4px solid #e11d48; padding-bottom: 20px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
+                        h1 { font-size: 32px; font-weight: 900; margin: 0; color: #e11d48; letter-spacing: -1px; }
+                        .co-details { text-align: right; }
+                        .meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-bottom: 40px; background: #fff1f2; padding: 25px; border-radius: 20px; border: 1px solid #fecdd3; }
+                        .meta-box h4 { margin: 0 0 5px; text-transform: uppercase; font-size: 10px; color: #e11d48; tracking: 1px; }
+                        .meta-box p { margin: 0; font-weight: 800; font-size: 14px; }
+                        table { width: 100%; border-collapse: collapse; margin-bottom: 30px; }
+                        th { background: #e11d48; color: white; padding: 12px; text-transform: uppercase; font-size: 11px; font-weight: 900; border: 1px solid #e11d48; }
+                        td { padding: 12px; border: 1px solid #f1f5f9; font-size: 13px; }
+                        .footer { margin-top: 100px; border-top: 1px dashed #cbd5e1; padding-top: 20px; display: flex; justify-content: space-between; font-size: 10px; color: #94a3b8; }
+                    </style>
+                    </head><body>
+                        <header>
+                            <div class="co-details" style="text-align:left; display:flex; align-items:center; gap:15px;">
+                                <img src="logo.png" style="height:60px; object-fit:contain;">
+                                <div>
+                                    <div style="font-size:42px; font-weight:900; color:#1e293b; line-height:1;">${c.name}</div>
+                                    <div style="font-size:14px; font-weight:600; color:#64748b; margin-top:5px;">${c.addr} | ${c.tel}</div>
+                                </div>
+                            </div>
+                            <div style="text-align:right;">
+                                <h1 style="font-size:24px; font-weight:900; color:#e11d48; margin:0; text-transform:uppercase;">PURCHASE RETURN</h1>
+                                <p style="margin:5px 0; font-weight:700; color:#94a3b8; font-size:12px;">Stock Discharge Documentation</p>
+                            </div>
+                        </header>
+                        <div class="meta">
+                            <div class="meta-box"><h4>Return Identity</h4><p>${d.docNo}</p></div>
+                            <div class="meta-box"><h4>Supplier Recipient</h4><p>${d.supplier}</p></div>
+                            <div class="meta-box"><h4>Authorization Date</h4><p>${new Date(d.date).toLocaleString()}</p></div>
+                            <div class="meta-box"><h4>Origin Station</h4><p>${session.loc}</p></div>
+                        </div>
+                        <table>
+                            <thead><tr><th>#</th><th>Asset Context</th><th style="text-align:center">Rtn Qty</th><th style="text-align:right">Reasoning</th></tr></thead>
+                            <tbody>${rows}</tbody>
+                        </table>
+                        <div style="text-align:right; font-weight:900; font-size:24px; color:#e11d48; margin:50px 0;">TOTAL UNITS: ${totalQty}</div>
+                        <div class="footer">
+                             <div>Authorized Procurement Signature: _______________________</div>
+                             <div>Generated by ${session.user} | PSS - Stock System</div>
+                        </div>
+                    </body></html>
+                `);
+                w.document.close();
+                w.focus();
+                setTimeout(() => { w.print(); }, 1000);
+            } catch (e) { alert("Execution Error: " + e.message); }
+        };
+
+        window.createPRN = async () => {
+            const sups = await getDocs(collection(db, "suppliers"));
+            const items = await getDocs(collection(db, "items"));
+            window.prnItems = [];
+
+            const supOpt = sups.docs.map(l => `<option value="${l.data().name}">${l.data().name}</option>`).join('');
+            const itemOpt = items.docs.map(i => `<option value="${i.data().code}" data-name="${i.data().name}">${i.data().name} (${i.data().code})</option>`).join('');
+
+            openModal("New Stock Discharge (PRN)", `
+                <div class="space-y-6">
+                    <div class="bg-slate-50 p-6 rounded-3xl border border-slate-200">
+                        <label class="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-3">Target Supplier</label>
+                        <select id="prn-sup" class="w-full p-4 border-2 border-slate-100 rounded-2xl bg-white font-black text-slate-800 outline-none focus:border-rose-400 transition-all text-sm uppercase">${supOpt}</select>
+                    </div>
+                    
+                    <div class="bg-rose-50/30 p-6 rounded-3xl border-2 border-rose-100/50 space-y-4">
+                         <div class="flex items-center justify-between mb-2">
+                             <h4 class="font-black text-xs uppercase text-rose-900 tracking-widest italic">Asset Selection</h4>
+                             <div id="p-stock-info" class="text-[9px] font-black text-rose-500 uppercase">Awaiting Selection</div>
+                         </div>
+                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                             <select id="prn-item" class="w-full p-3 border-2 border-slate-100 rounded-xl bg-white font-bold text-xs outline-none focus:border-rose-400 transition-all" onchange="loadPRNBatches()">${itemOpt}</select>
+                             <select id="prn-batch" class="w-full p-3 border-2 border-slate-100 rounded-xl bg-white font-bold text-xs outline-none focus:border-rose-400 transition-all"><option>Pick Item First</option></select>
+                         </div>
+                         <div class="grid grid-cols-2 gap-3">
+                             <input id="prn-qty" type="number" placeholder="Unit Count" class="p-3 border-2 border-slate-100 rounded-xl bg-white font-black text-base outline-none focus:border-rose-400 text-rose-600">
+                             <select id="prn-reason" class="p-3 border-2 border-slate-100 rounded-xl bg-white font-black text-xs outline-none focus:border-rose-400 text-slate-500">
+                                 <option>Damaged Stock</option>
+                                 <option>Near Expiry</option>
+                                 <option>Expired Asset</option>
+                                 <option>Incorrect Delivery</option>
+                                 <option>Overstock Return</option>
+                             </select>
+                         </div>
+                         <button onclick="addPRNItem()" class="w-full bg-rose-600 text-white p-4 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-rose-100 hover:bg-rose-700 transition transform active:scale-95">REGISTER DISCHARGE ITEM</button>
+                    </div>
+
+                    <div id="prn-list" class="space-y-3 max-h-60 overflow-auto custom-scrollbar pr-2 pb-4"></div>
+
+                    <button onclick="savePRNPrep()" class="w-full bg-slate-900 text-white p-5 rounded-[2rem] font-black text-lg shadow-2xl hover:bg-rose-600 transition-all transform active:scale-95 flex items-center justify-center gap-4">
+                        <span>FINALIZE RETURN NOTE</span>
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                    </button>
+                </div>
+             `, `<button onclick="closeModal()" class="w-full bg-slate-100 text-slate-500 p-4 rounded-2xl font-black text-xs uppercase tracking-widest">Abort Process</button>`);
+
+            setTimeout(loadPRNBatches, 100);
+        };
+
+        window.loadPRNBatches = async () => {
+            const c = document.getElementById('prn-item').value;
+            const s = await getDocs(query(collection(db, "stocks"), where("itemCode", "==", c), where("loc", "==", session.loc)));
+            const sel = document.getElementById('prn-batch');
+            const batches = s.docs.filter(d => d.data().qty > 0).map(d => `<option value="${d.id}" data-max="${d.data().qty}">EXP: ${d.data().exp} | AV: ${d.data().qty}</option>`);
+            sel.innerHTML = batches.length ? batches.join('') : '<option disabled>NO STOCK FOUND</option>';
+            document.getElementById('p-stock-info').innerText = batches.length ? `${batches.length} BATCHES READY` : 'OUT OF STOCK';
+        };
+
+        window.addPRNItem = () => {
+            const b = document.getElementById('prn-batch');
+            if (!b.value || b.disabled) return alert("System Critical: No valid asset batch selected.");
+            const q = parseFloat(document.getElementById('prn-qty').value) || 0;
+            const reason = document.getElementById('prn-reason').value;
+            const max = parseFloat(b.options[b.selectedIndex].dataset.max);
+
+            if (q <= 0) return alert("Validation Failed: Return unit count must be positive.");
+            if (q > max) return alert("Inventory Limit: Cannot return more than available batch stock (" + max + ")");
+
+            const iSel = document.getElementById('prn-item');
+            const name = iSel.options[iSel.selectedIndex].dataset.name;
+            const batchText = b.options[b.selectedIndex].text;
+            const exp = batchText.split('|')[0].replace('EXP: ','').trim();
+
+            window.prnItems.push({ code: iSel.value, name, q, batchId: b.value, exp, reason });
+            renderPRNList();
+            
+            // Subtle reset
+            document.getElementById('prn-qty').value = '';
+        };
+
+        window.renderPRNList = () => {
+            document.getElementById('prn-list').innerHTML = window.prnItems.map((x, i) => `
+                <div class="flex justify-between items-center bg-white p-5 border-2 border-slate-50 rounded-2xl shadow-sm animate-fade">
+                    <div>
+                        <div class="font-black text-slate-800 text-sm">${x.name}</div>
+                        <div class="flex gap-2 items-center mt-1">
+                            <span class="text-[9px] font-black text-rose-500 bg-rose-50 px-2 py-0.5 rounded border border-rose-100 uppercase font-mono">${x.exp}</span>
+                            <span class="text-[9px] font-bold text-slate-400 italic">${x.reason}</span>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <div class="text-right">
+                             <div class="font-black text-rose-600 text-base leading-none">${x.q}</div>
+                             <div class="text-[8px] font-black text-slate-300 uppercase">UNITS</div>
+                        </div>
+                        <button onclick="window.prnItems.splice(${i},1);renderPRNList()" class="w-8 h-8 rounded-full hover:bg-rose-50 text-rose-300 hover:text-rose-600 transition flex items-center justify-center font-black">&times;</button>
+                    </div>
+                </div>`).join('');
+        };
+
+        window.savePRNPrep = () => {
+            if (window.prnItems.length === 0) return alert("System Notification: Return manifest is empty.");
+            const s = document.getElementById('prn-sup').value;
+            confirmAction("Confirm discharge of " + window.prnItems.length + " assets to " + s + "?", "savePRNExec", s);
+        };
+
+        window.savePRNExec = async (sup) => {
+            const id = await generateID('PRN', 'docs');
+            const batch = writeBatch(db);
+
+            for (let x of window.prnItems) {
+                const ref = doc(db, "stocks", x.batchId);
+                const sDoc = await getDoc(ref);
+                if (sDoc.exists()) {
+                    const newQty = (sDoc.data().qty || 0) - x.q;
+                    batch.update(ref, { qty: Math.max(0, newQty) });
+                }
+                await logHistory(x.code, 'PRN', -x.q, id, session.loc, sup);
+            }
+
+            const dRef = doc(collection(db, "docs"), id);
+            batch.set(dRef, { 
+                docNo: id, 
+                type: 'PRN', 
+                supplier: sup, 
+                items: window.prnItems, 
+                date: new Date().toISOString(),
+                user: session.user,
+                loc: session.loc
+            });
+
+            await batch.commit();
+            loadPRN();
+            showCreatedDoc(id, 'Stock Discharge Note (PRN)');
+            setTimeout(() => { alert(`Purchase Return ${id} Finalized. Review in ledger.`); }, 800);
+        };
+        // === 10. TRANSFER OUT ===
+        async function loadTransferOut() {
+            const raw = await getDocs(query(collection(db, "docs"), where("type", "==", "TRANSFER")));
+            const filtered = raw.docs.filter(d => {
+                const data = d.data();
+                return (data.fromLoc === session.loc || data.toLoc === session.loc);
+            });
+            const outSnap = { docs: filtered.sort((a, b) => new Date(b.data().date) - new Date(a.data().date)) };
+
+            document.getElementById('app').innerHTML = `
+                 <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
+                    <div class="flex items-center gap-4">
+                        <div class="w-14 h-14 bg-blue-600 text-white rounded-2xl flex items-center justify-center text-3xl shadow-xl shadow-blue-200">📤</div>
+                        <div>
+                            <h3 class="font-black text-2xl text-slate-800 tracking-tight">Stock Transfer Out</h3>
+                            <p class="text-slate-500 text-sm font-medium">Issue items from <span class="text-blue-600 font-bold">${session.loc}</span> to other locations</p>
+                        </div>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                        <div class="flex-1 md:flex-none bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm flex items-center">
+                            <input id="tr-find" placeholder="Search Transfer #..." class="border-none bg-transparent px-4 py-2 text-sm w-full md:w-48 focus:ring-0 font-bold text-slate-700">
+                            <button onclick="viewOldTrByNo()" class="bg-slate-900 text-white px-5 py-2 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-black transition">Find</button>
+                        </div>
+                        <button onclick="createTransferOut()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3.5 rounded-2xl font-black shadow-xl shadow-blue-200 transition-all transform active:scale-95 flex items-center gap-3">
+                            <span class="text-xl">+</span>
+                            <span class="uppercase tracking-widest text-[11px]">New Transfer</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 gap-6">
+                    <div class="card overflow-hidden border border-slate-200 shadow-sm bg-white">
+                        <table class="w-full text-left">
+                            <thead class="bg-slate-50 border-b border-slate-200 uppercase text-[10px] font-black text-slate-400 tracking-widest">
+                                <tr>
+                                    <th class="p-5">Transfer Number</th>
+                                    <th class="p-5">Destination</th>
+                                    <th class="p-5">Status</th>
+                                    <th class="p-5">Creation Date</th>
+                                    <th class="p-5 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${outSnap.docs.map(d => {
+                                    const st = d.data().status;
+                                    let color = "bg-slate-100 text-slate-600";
+                                    if(st === 'TRANSIT') color = "bg-amber-100 text-amber-700";
+                                    if(st === 'RECEIVED') color = "bg-emerald-100 text-emerald-700";
+                                    if(st === 'PENDING') color = "bg-blue-100 text-blue-700";
+
+                                    return `
+                                    <tr class="hover:bg-slate-50/80 transition-colors group">
+                                        <td class="p-5">
+                                            <div class="font-black text-slate-800">${d.data().docNo}</div>
+                                            <div class="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">${d.data().items?.length || 0} Unique Items</div>
+                                        </td>
+                                        <td class="p-5 text-sm">
+                                            <div class="font-bold text-slate-700">${d.data().toLoc}</div>
+                                        </td>
+                                        <td class="p-5">
+                                             <span class="${color} px-3 py-1 rounded-full text-[10px] font-black uppercase border border-current opacity-80">${st}</span>
+                                        </td>
+                                        <td class="p-5 text-sm font-medium text-slate-500">${new Date(d.data().date).toLocaleDateString()}</td>
+                                        <td class="p-5 text-right">
+                                            <div class="flex justify-end gap-2">
+                                                ${st === 'PENDING' ? `
+                                                    <button onclick="window.activeTrId='${d.id}';window.activeTrNo='${d.data().docNo}';window.trItems=${JSON.stringify(d.data().items)};completeTrExec()" class="bg-blue-600 text-white px-4 py-2 rounded-lg font-black text-[10px] uppercase tracking-widest hover:scale-105 transition active:scale-95 shadow-lg shadow-blue-100">Dispatch</button>
+                                                ` : ''}
+                                                <button onclick="viewOldTr('${d.id}')" class="text-slate-400 hover:text-blue-600 font-bold text-xs p-2 rounded hover:bg-blue-50 transition uppercase tracking-widest">Details</button>
+                                            </div>
+                                        </td>
+                                    </tr>`;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                        ${outSnap.docs.length === 0 ? '<div class="p-20 text-center text-slate-300 italic font-medium uppercase tracking-[0.2em] text-xs">No Records in Ledger</div>' : ''}
+                    </div>
+                </div>`;
+            window.trItems = [];
+        }
+
+        window.createTransferOut = async () => {
+            const locs = await getDocs(collection(db, "locations"));
+            const itemsSnap = await getDocs(collection(db, "items"));
+            window.trItems = [];
+
+            const locOpt = locs.docs.filter(l => l.data().name !== session.loc).map(l => `<option>${l.data().name}</option>`).join('');
+            const itemOpt = itemsSnap.docs.map(i => `<option value="${i.data().code}" data-name="${i.data().name}" data-cost="${i.data().cost}" data-pack="${i.data().packSize || '1'}">${i.data().name} (${i.data().code})</option>`).join('');
+
+            openModal("Issue New Stock Transfer", `
+                <div class="space-y-6">
+                    <!-- Global Settings -->
+                    <div class="p-6 bg-slate-50 border border-slate-200 rounded-3xl grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                             <label class="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Source Location</label>
+                             <div class="p-3 bg-white border border-slate-200 rounded-xl font-black text-slate-400 opacity-60">${session.loc}</div>
+                        </div>
+                        <div>
+                             <label class="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Destination Recipient</label>
+                             <select id="tr-dest" class="w-full p-3 bg-white border border-slate-200 rounded-xl font-black text-slate-800 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all">${locOpt}</select>
+                        </div>
+                    </div>
+                    
+                    <!-- Item Entry Machine -->
+                    <div class="p-6 bg-blue-50 border border-blue-100 rounded-3xl space-y-4">
+                         <div class="flex items-center justify-between mb-2">
+                             <h4 class="font-black text-xs uppercase text-blue-900 tracking-widest">Add Items to Manifest</h4>
+                             <span id="tr-stock-info" class="text-[10px] font-bold text-blue-500">Select an item to view available batches</span>
+                         </div>
+                         <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                             <div class="md:col-span-2">
+                                <select id="tr-item" class="w-full p-3 border border-blue-200 rounded-xl text-sm font-bold bg-white" onchange="loadTrBatches()">${itemOpt}</select>
+                             </div>
+                             <div>
+                                <select id="tr-batch" class="w-full p-3 border border-blue-200 rounded-xl text-sm font-bold bg-white"><option>-- Select Item --</option></select>
+                             </div>
+                         </div>
+                         <div class="flex gap-3">
+                             <div class="flex-1 relative">
+                                 <input id="tr-qty" type="number" placeholder="Transfer Quantity" class="w-full p-4 border border-blue-200 rounded-2xl font-black text-lg focus:ring-4 focus:ring-blue-600/10 outline-none">
+                                 <span class="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] font-black text-blue-300 uppercase">Input Qty</span>
+                             </div>
+                             <button onclick="addTrItem()" class="bg-blue-600 text-white px-8 rounded-2xl font-black text-2xl shadow-lg shadow-blue-200 hover:bg-blue-700 active:scale-95 transition-all">+</button>
+                         </div>
+                    </div>
+
+                    <!-- manifest Preview -->
+                    <div>
+                        <div class="flex justify-between items-center mb-3 px-1">
+                             <h4 class="font-black text-[10px] uppercase text-slate-400 tracking-widest flex items-center gap-2">
+                                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>
+                                 Current Transfer Manifest
+                             </h4>
+                             <span id="tr-count" class="text-[10px] font-black text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">0 items</span>
+                        </div>
+                        <div id="tr-list" class="space-y-3 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
+                             <div class="p-10 text-center border-2 border-dashed border-slate-100 rounded-3xl text-slate-300 italic font-medium text-sm">No items added to this transfer yet.</div>
+                        </div>
+                    </div>
+                    
+                    <div id="tr-actions" class="pt-4">
+                        <button onclick="createTrExec()" id="btn-create-tr" class="w-full bg-slate-900 border-2 border-slate-900 text-white p-5 rounded-2xl font-black text-xl hover:bg-white hover:text-slate-900 transition-all shadow-xl active:scale-95 flex items-center justify-center gap-3">
+                             <span>Create Transfer Order</span>
+                             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                        </button>
+                    </div>
+                </div>
+             `, `<button onclick="closeModal()" class="text-[10px] font-black uppercase text-slate-400 hover:text-slate-600">Cancel and Close</button>`);
+
+            setTimeout(loadTrBatches, 100);
+        };
+
+        window.viewOldTrByNo = async () => {
+            const n = document.getElementById('tr-find').value.trim();
+            if (!n) return alert("Please enter a valid transfer document number.");
+            const snap = await getDocs(query(collection(db, "docs"), where("docNo", "==", n)));
+            if (snap.empty) return alert("No transfer found with that number.");
+            viewOldTr(snap.docs[0].id);
+        };
+
+        window.viewOldTr = async (id) => {
+            const d = (await getDoc(doc(db, "docs", id))).data();
+            const rows = d.items.map(x => `
+                <tr class="border-b border-slate-50 last:border-none group hover:bg-slate-50 transition-colors">
+                    <td class="p-4">
+                        <div class="font-bold text-slate-800 text-sm">${x.name || ''}</div>
+                        <div class="text-[10px] text-slate-400 font-mono">${x.code}</div>
+                    </td>
+                    <td class="p-4 text-center font-bold text-slate-600">${x.pack || '-'}</td>
+                    <td class="p-4 text-center">
+                         <span class="bg-blue-50 text-blue-600 px-3 py-1 rounded-lg font-black text-sm">${x.qty}</span>
+                    </td>
+                    <td class="p-4 text-center font-medium text-slate-500">${x.exp || '-'}</td>
+                    <td class="p-4 text-right">
+                         <div class="font-black text-slate-700">${formatCurrency(x.cost || 0)}</div>
+                    </td>
+                    <td class="p-4 text-right">
+                         <div class="font-black text-blue-600">${formatCurrency((x.cost || 0) * x.qty)}</div>
+                    </td>
+                </tr>`).join('');
+
+            openModal(`Document Analysis: ${d.docNo}`,
+                `<div class="space-y-6">
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div class="p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                             <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Source Site</div>
+                             <div class="font-black text-slate-800 text-xs truncate">${d.fromLoc}</div>
+                        </div>
+                        <div class="p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                             <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Destination</div>
+                             <div class="font-black text-slate-800 text-xs truncate">${d.toLoc}</div>
+                        </div>
+                        <div class="p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                             <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Lifecycle</div>
+                             <div class="font-black text-blue-600 text-xs">${d.status}</div>
+                        </div>
+                        <div class="p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                             <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Created Date</div>
+                             <div class="font-black text-slate-800 text-xs">${new Date(d.date).toLocaleDateString()}</div>
+                        </div>
+                    </div>
+                    
+                    ${d.status === 'PENDING' ? `
+                        <div class="bg-emerald-50 border border-emerald-200 p-6 rounded-3xl flex items-center justify-between">
+                            <div>
+                                <h4 class="font-black text-emerald-900 leading-tight">Action Required: Transfer Ready</h4>
+                                <p class="text-emerald-600 text-[10px] font-bold uppercase tracking-widest">Audit Status: Pending Stock Issuance</p>
+                            </div>
+                            <button onclick="window.activeTrId='${id}';window.activeTrNo='${d.docNo}';window.trItems=${JSON.stringify(d.items)};completeTrExec()" class="bg-emerald-600 text-white px-8 py-4 rounded-2xl font-black shadow-xl shadow-emerald-200 hover:scale-105 active:scale-95 transition-all text-sm">COMPLETE DISPATCH</button>
+                        </div>
+                    ` : ''}
+                    
+                    <div class="border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+                        <table class="w-full text-left">
+                            <thead class="bg-slate-50 text-[10px] font-black uppercase text-slate-400 border-b border-slate-100">
+                                <tr><th class="p-4">Item Details</th><th class="p-4 text-center">Pack</th><th class="p-4 text-center">Qty</th><th class="p-4 text-center">Expiry</th><th class="p-4 text-right">Cost</th><th class="p-4 text-right">Ext Value</th></tr>
+                            </thead>
+                            <tbody>${rows}</tbody>
+                            <tfoot class="bg-slate-50 font-black">
+                                <tr>
+                                    <td colspan="5" class="p-4 text-right text-slate-400 uppercase text-[10px] tracking-widest">Aggregate Manifest Value:</td>
+                                    <td class="p-4 text-right text-blue-600 text-lg">${formatCurrency(d.items.reduce((a, c) => a + ((c.cost || 0) * c.qty), 0))}</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                 </div>`,
+                `<div class="flex gap-3 w-full">
+                    <button onclick="window.printDoc('${d.docNo}', 'Transfer Note', '<thead><tr><th>Item</th><th>Qty</th><th>Exp</th></tr></thead><tbody>${d.items.map(i => `<tr><td>${i.name}</td><td>${i.qty}</td><td>${i.exp}</td></tr>`).join('')}</tbody>')" class="flex-1 bg-slate-900 text-white py-3 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-black transition shadow-lg">Print Disptach Note</button>
+                    <button onclick="closeModal()" class="flex-1 bg-slate-100 text-slate-500 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 transition">Close</button>
+                </div>`);
+        };
+
+        window.loadTrBatches = async () => {
+            const c = document.getElementById('tr-item').value;
+            const s = await getDocs(query(collection(db, "stocks"), where("itemCode", "==", c), where("loc", "==", session.loc)));
+            const sel = document.getElementById('tr-batch');
+            const data = s.docs.filter(d => d.data().qty > 0).map(d => `<option value="${d.id}" data-max="${d.data().qty}" data-exp="${d.data().exp || 'N/A'}">Batch: ${d.id.slice(-6).toUpperCase()} | Exp: ${d.data().exp || 'N/A'} (Avl: ${d.data().qty})</option>`).join('');
+            sel.innerHTML = data || '<option disabled>Out of Stock at this location</option>';
+            document.getElementById('tr-stock-info').innerText = data ? `Found ${s.docs.length} matches in cloud storage` : 'CRITICAL: No available stock found for issuing';
+        };
+
+        window.addTrItem = () => {
+            const b = document.getElementById('tr-batch');
+            const iSel = document.getElementById('tr-item');
+            if (b.disabled || !b.value || b.value.includes('--') || b.value.includes('Select')) return alert("Please select a valid item and batch.");
+
+            const max = parseFloat(b.options[b.selectedIndex].dataset.max);
+            const qInput = document.getElementById('tr-qty');
+            const q = parseFloat(qInput.value);
+            const c = iSel.value;
+            const name = iSel.options[iSel.selectedIndex].dataset.name;
+            const cost = parseFloat(iSel.options[iSel.selectedIndex].dataset.cost) || 0;
+            const exp = b.options[b.selectedIndex].dataset.exp;
+
+            if (!q || q <= 0) return alert("Please enter a valid quantity.");
+            if (q > max) return alert(`Insufficient stock. Max available: ${max}`);
+
+            const existing = window.trItems.find(x => x.batchId === b.value);
+            if(existing) {
+                if(existing.qty + q > max) return alert("Cumulative quantity exceeds available stock.");
+                existing.qty += q;
+            } else {
+                window.trItems.push({ code: c, name, qty: q, batchId: b.value, exp, cost, pack: iSel.options[iSel.selectedIndex].dataset.pack });
+            }
+
+            renderTrManifest();
+            qInput.value = '';
+        };
+
+        window.renderTrManifest = () => {
+            const list = document.getElementById('tr-list');
+            const count = document.getElementById('tr-count');
+            count.innerText = `${window.trItems.length} items`;
+            
+            if(window.trItems.length === 0) {
+                list.innerHTML = `<div class="p-10 text-center border-2 border-dashed border-slate-100 rounded-3xl text-slate-300 italic font-medium text-sm">No items added to this transfer yet.</div>`;
+                return;
+            }
+
+            list.innerHTML = window.trItems.map((x, i) => `
+                <div class="flex justify-between items-center bg-white p-4 border border-slate-100 rounded-2xl shadow-sm hover:shadow-md transition-shadow group">
+                    <div class="flex-1">
+                        <div class="font-black text-slate-800 text-sm mb-1">${x.name}</div>
+                        <div class="flex items-center gap-3">
+                             <span class="text-[10px] font-black text-slate-400 bg-slate-50 px-2 py-0.5 rounded border border-slate-100">CD: ${x.code}</span>
+                             <span class="text-[10px] font-black text-blue-500 bg-blue-50 px-2 py-0.5 rounded border border-blue-100 uppercase">BATCH: ${x.batchId.slice(-6).toUpperCase()}</span>
+                             <span class="text-[10px] font-medium text-slate-400 italic">Exp: ${x.exp}</span>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-6">
+                        <div class="text-right">
+                             <div class="flex items-center bg-slate-50 rounded-lg p-1 border border-slate-200">
+                                 <button onclick="updateTrItemQty(${i}, -1)" class="w-6 h-6 flex items-center justify-center text-slate-400 hover:bg-slate-200 rounded transition">-</button>
+                                 <span class="px-3 font-black text-slate-700 text-xs">${x.qty}</span>
+                                 <button onclick="updateTrItemQty(${i}, 1)" class="w-6 h-6 flex items-center justify-center text-slate-400 hover:bg-slate-200 rounded transition">+</button>
+                             </div>
+                        </div>
+                        <button onclick="deleteTrItem(${i})" class="w-8 h-8 rounded-full bg-rose-50 text-rose-500 flex items-center justify-center hover:bg-rose-500 hover:text-white transition-colors">
+                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        </button>
+                    </div>
+                </div>`).join('');
+        };
+
+        window.updateTrItemQty = (idx, delta) => {
+            const item = window.trItems[idx];
+            item.qty += delta;
+            if(item.qty <= 0) return deleteTrItem(idx);
+            renderTrManifest();
+        };
+
+        window.deleteTrItem = (idx) => {
+            window.trItems.splice(idx, 1);
+            renderTrManifest();
+        };
+
+        window.createTrExec = async () => {
+            if (window.trItems.length === 0) return alert("Manifest is empty.");
+            const dest = document.getElementById('tr-dest').value;
+            if (!dest) return alert("Select Destination.");
+
+            const btn = document.getElementById('btn-create-tr');
+            btn.disabled = true;
+            btn.innerHTML = '<span>Creating...</span>';
+
+            try {
+                const id = await generateID('TR-OUT', 'docs');
+                const cleanItems = window.trItems.map(x => ({
+                    code: x.code, name: x.name, qty: x.qty, batchId: x.batchId,
+                    exp: x.exp || '', cost: x.cost || 0, pack: x.pack || '1'
+                }));
+
+                const dRef = doc(collection(db, "docs"));
+                await setDoc(dRef, {
+                    docNo: id, type: 'TRANSFER', fromLoc: session.loc, toLoc: dest,
+                    items: cleanItems, status: 'PENDING', date: new Date().toISOString(),
+                    user: session.user
+                });
+
+                window.activeTrId = dRef.id;
+                window.activeTrNo = id;
+
+                document.getElementById('tr-actions').innerHTML = `
+                    <div class="bg-emerald-50 border border-emerald-100 p-6 rounded-3xl space-y-4">
+                        <div class="text-center">
+                            <h4 class="font-black text-emerald-900 text-lg">Transfer Order ${id} Created!</h4>
+                        </div>
+                        <button onclick="completeTrExec()" id="btn-complete-tr" class="w-full bg-emerald-600 text-white p-5 rounded-2xl font-black text-xl hover:bg-emerald-700 shadow-xl shadow-emerald-200 flex items-center justify-center gap-3">
+                             <span>Complete Stock Issuance</span>
+                        </button>
+                    </div>
+                `;
+                
+                document.getElementById('tr-item').disabled = true;
+                document.getElementById('tr-qty').disabled = true;
+
+            } catch (e) {
+                console.error(e);
+                alert("Error: " + e.message);
+                btn.disabled = false;
+                btn.innerHTML = '<span>Retry</span>';
+            }
+        };
+
+        window.completeTrExec = async () => {
+            const btn = document.getElementById('btn-complete-tr');
+            btn.disabled = true;
+            btn.innerHTML = '<span>Finalizing...</span>';
+
+            try {
+                const batch = writeBatch(db);
+                for (let x of window.trItems) {
+                    const ref = doc(db, "stocks", x.batchId);
+                    const snap = await getDoc(ref);
+                    if (snap.exists()) batch.update(ref, { qty: snap.data().qty - x.qty });
+                }
+
+                batch.update(doc(db, "docs", window.activeTrId), { status: 'TRANSIT' });
+                await batch.commit();
+
+                for (let x of window.trItems) await logHistory(x.code, 'TR-OUT', -x.qty, window.activeTrNo, session.loc, document.getElementById('tr-dest').value);
+
+                alert(`${window.activeTrNo} Dispatched!`);
+                closeModal();
+                loadTransferOut();
+            } catch (e) {
+                console.error(e);
+                alert("Error: " + e.message);
+                btn.disabled = false;
+                btn.innerHTML = '<span>Retry</span>';
+            }
+        };
+
+        // === 11. TRANSFER IN ===
+        async function loadTransferIn() {
+            const raw = await getDocs(collection(db, "docs"));
+            const transferDocs = raw.docs.filter(d => d.data().type === 'TRANSFER');
+
+            const pending = transferDocs.filter(d => d.data().status === 'TRANSIT' && d.data().toLoc === session.loc);
+            const hist = transferDocs.filter(d => d.data().status === 'RECEIVED' && d.data().toLoc === session.loc)
+                .sort((a, b) => new Date(b.data().date) - new Date(a.data().date)).slice(0, 20);
+
+            document.getElementById('app').innerHTML = `
+                 <div class="max-w-6xl mx-auto space-y-10">
+                     <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+                        <div class="flex items-center gap-4">
+                            <div class="w-16 h-16 bg-emerald-600 text-white rounded-2xl flex items-center justify-center text-4xl shadow-2xl shadow-emerald-200">📥</div>
+                            <div>
+                                <h3 class="font-black text-3xl text-slate-800 tracking-tight">Stock Reception</h3>
+                                <p class="text-slate-500 font-medium">Accepting transfers incoming to <span class="text-emerald-600 font-bold">${session.loc}</span></p>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-3 w-full md:w-auto bg-white p-2 rounded-2xl border border-slate-200 shadow-xl">
+                             <input id="tr-in-find" placeholder="ID: TR-OUT-0000..." class="border-none bg-transparent px-4 py-2 text-sm w-full md:w-56 focus:ring-0 font-black text-slate-700">
+                             <button onclick="viewRecvTrByNo()" class="bg-emerald-600 text-white px-6 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-emerald-700 transition active:scale-95 shadow-lg shadow-emerald-200">Process Entry</button>
+                        </div>
+                     </div>
+                     
+                     <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                         <!-- Pending Pane -->
+                         <div class="lg:col-span-2 space-y-4">
+                             <div class="flex items-center gap-3 px-2">
+                                 <h3 class="font-black text-[10px] uppercase text-slate-400 tracking-[0.2em] flex items-center gap-2">
+                                     <span class="w-2 h-2 bg-amber-500 rounded-full animate-pulse"></span>
+                                     Live Incoming Transit (${pending.length})
+                                 </h3>
+                             </div>
+                             
+                             <div class="space-y-3">
+                                 ${pending.map(d => `
+                                     <div class="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm hover:border-emerald-500 hover:shadow-xl hover:shadow-emerald-500/5 transition-all group relative overflow-hidden">
+                                         <div class="absolute top-0 right-0 w-24 h-24 bg-slate-50 rounded-full -mr-12 -mt-12 group-hover:bg-emerald-50 transition-colors"></div>
+                                         <div class="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                                             <div class="space-y-1">
+                                                 <div class="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Pending Verification</div>
+                                                 <div class="text-2xl font-black text-slate-800">${d.data().docNo}</div>
+                                                 <div class="flex items-center gap-4 text-xs font-bold text-slate-400">
+                                                     <span class="flex items-center gap-1"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path></svg> From: ${d.data().fromLoc}</span>
+                                                     <span class="flex items-center gap-1"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg> Sent: ${new Date(d.data().date).toLocaleDateString()}</span>
+                                                 </div>
+                                             </div>
+                                             <button onclick="viewRecvTr('${d.id}')" class="bg-slate-900 text-white px-8 py-4 rounded-2xl font-black text-[11px] uppercase tracking-[0.2em] shadow-button hover:bg-emerald-600 transition-all hover:scale-[1.05] active:scale-95">Accept Stock Receipt</button>
+                                         </div>
+                                     </div>`).join('')}
+                                 ${pending.length === 0 ? `
+                                     <div class="p-20 text-center bg-slate-50 border-2 border-dashed border-slate-200 rounded-[3rem]">
+                                         <div class="text-4xl mb-4">✨</div>
+                                         <p class="font-black text-slate-400 uppercase tracking-widest text-[10px]">No pending stock in transit to this location.</p>
+                                     </div>` : ''}
+                             </div>
+                         </div>
+
+                         <!-- History Pane -->
+                         <div class="space-y-4">
+                             <h3 class="font-black text-[10px] uppercase text-slate-400 tracking-[0.2em] px-2 italic">Recently Received</h3>
+                             <div class="card p-2 bg-white border border-slate-200 divide-y divide-slate-100">
+                                 ${hist.map(d => `
+                                     <div class="p-4 hover:bg-slate-50 transition-colors group flex items-center justify-between gap-4">
+                                         <div>
+                                            <div class="flex items-center gap-2 mb-1">
+                                                <span class="font-black text-slate-700 text-sm">${d.data().docNo}</span>
+                                                <span class="text-[8px] font-black text-emerald-500 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100 uppercase">Rcvd</span>
+                                            </div>
+                                            <div class="text-[10px] font-bold text-slate-400">
+                                                <span>From: ${d.data().fromLoc}</span>
+                                                <span class="ml-2">${new Date(d.data().date).toLocaleDateString()}</span>
+                                            </div>
+                                         </div>
+                                         <button onclick="printTransferSummary('${d.id}')" class="p-2 rounded-lg hover:bg-emerald-50 text-emerald-500 transition-colors" title="Reprint Receipt">
+                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2z"></path></svg>
+                                         </button>
+                                     </div>`).join('')}
+                                 ${hist.length === 0 ? '<div class="p-8 text-center text-slate-300 italic font-medium text-xs font-mono tracking-tighter">Secure Ledger Empty</div>' : ''}
+                             </div>
+                         </div>
+                     </div>
+                 </div>`;
+        }
+
+        window.viewRecvTrByNo = async () => {
+            const n = document.getElementById('tr-in-find').value.trim();
+            if (!n) return alert("Document ID Required");
+            const snap = await getDocs(query(collection(db, "docs"), where("docNo", "==", n)));
+            if (snap.empty) return alert("No transfer document matches this record ID.");
+            const d = snap.docs[0].data();
+            if(d.toLoc !== session.loc) return alert(`Authentication Level 0 Failure: This transfer is addressed to [${d.toLoc}], not your session location [${session.loc}]. Access denied.`);
+            if(d.status === 'RECEIVED') return alert("Audit Alert: This transfer has already been completed and items have been allocated to your local stock.");
+            viewRecvTr(snap.docs[0].id);
+        };
+
+        window.viewRecvTr = async (id) => {
+            const dSnap = await getDoc(doc(db, "docs", id));
+            const d = dSnap.data();
+            const rows = d.items.map(x => `
+                <tr class="border-b border-slate-50 last:border-none group hover:bg-emerald-50/50 transition-colors">
+                     <td class="p-4">
+                        <div class="font-black text-slate-800 text-sm">${x.name || ''}</div>
+                        <div class="text-[10px] text-slate-400 font-mono tracking-tighter">${x.code}</div>
+                     </td>
+                     <td class="p-4 text-center">
+                        <span class="bg-emerald-50 text-emerald-600 px-3 py-1 rounded-lg font-black text-sm">${x.qty}</span>
+                     </td>
+                     <td class="p-4 text-center font-bold text-slate-500 text-xs">${x.exp || 'GENERIC'}</td>
+                     <td class="p-4 text-right">
+                        <div class="font-black text-slate-700">${formatCurrency(x.cost || 0)}</div>
+                     </td>
+                     <td class="p-4 text-right">
+                        <div class="font-black text-emerald-600">${formatCurrency((x.cost || 0) * x.qty)}</div>
+                     </td>
+                </tr>`).join('');
+
+            openModal(`Verify Incoming Asset Payload: ${d.docNo}`, `
+                  <div class="space-y-6">
+                      <div class="p-6 bg-slate-900 text-white rounded-[2.5rem] relative overflow-hidden shadow-2xl">
+                          <div class="absolute top-0 right-0 p-8 opacity-10 rotate-12"><svg class="w-32 h-32" fill="currentColor" viewBox="0 0 24 24"><path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg></div>
+                          <div class="relative z-10 grid grid-cols-2 gap-8">
+                              <div><div class="text-[9px] font-black uppercase text-slate-500 tracking-widest mb-1">Origin Point</div><div class="font-black text-lg">${d.fromLoc}</div></div>
+                              <div><div class="text-[9px] font-black uppercase text-slate-500 tracking-widest mb-1">Estimated Value</div><div class="font-black text-lg text-emerald-400">${formatCurrency(d.items.reduce((a,c)=>a+(c.qty*c.cost), 0))}</div></div>
+                              <div><div class="text-[9px] font-black uppercase text-slate-500 tracking-widest mb-1">Dispatch Timestamp</div><div class="font-black text-xs text-slate-400">${formatDate(d.date)}</div></div>
+                              <div><div class="text-[9px] font-black uppercase text-slate-500 tracking-widest mb-1">Manifest Integrity</div><div class="font-black text-xs text-emerald-500">SEALED & READY</div></div>
+                          </div>
+                      </div>
+                      
+                      <div class="border border-slate-200 rounded-[2rem] overflow-hidden shadow-sm bg-white">
+                          <table class="w-full text-left">
+                              <thead class="bg-slate-50 text-[10px] font-black uppercase text-slate-400 border-b border-slate-100">
+                                  <tr><th class="p-4">Item Catalog Specs</th><th class="p-4 text-center">Batch Qty</th><th class="p-4 text-center">Expiry</th><th class="p-4 text-right">Unit Val</th><th class="p-4 text-right">Line Total</th></tr>
+                              </thead>
+                              <tbody class="divide-y divide-slate-100 italic">${rows}</tbody>
+                          </table>
+                      </div>
+
+                      <div class="p-5 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
+                          <div class="text-amber-500 text-xl font-bold">⚠️</div>
+                          <div class="text-[11px] font-medium text-amber-800 leading-relaxed italic">By confirming receipt, you acknowledge that all items listed above matched physical counts and are now under legal liability of <b>${session.loc}</b>. This action is immutable.</div>
+                      </div>
+                  </div>
+               `, `<button onclick="confirmAction('Confirm Final Stock Allocation?','execRecvTr','${id}')" class="w-full bg-emerald-600 border-2 border-emerald-600 text-white p-5 rounded-2xl font-black text-xl hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-200 flex items-center justify-center gap-3">Accept & Integrate Assets</button>`);
+        };
+
+        window.execRecvTr = async (id) => {
+            const ref = doc(db, "docs", id);
+            const d = (await getDoc(ref)).data();
+            const batch = writeBatch(db);
+
+            d.items.forEach(x => {
+                const sRef = doc(collection(db, "stocks"));
+                batch.set(sRef, { 
+                    itemCode: x.code, 
+                    loc: session.loc, 
+                    qty: x.qty, 
+                    exp: x.exp || 'TR-IN', 
+                    date: new Date().toISOString(),
+                    refTr: d.docNo
+                });
+            });
+
+            batch.update(ref, { status: 'RECEIVED', receivedAt: new Date().toISOString(), receivedBy: session.user });
+            await batch.commit();
+
+            for (let x of d.items) await logHistory(x.code, 'TR-IN', x.qty, d.docNo, d.fromLoc, session.loc);
+
+            alert(`Success: Inventory payload ${d.docNo} has been merged into local database.`);
+            loadTransferIn();
+            window.closeModal();
+        };
+
+        window.printTransferSummary = async (id) => {
+            const d = (await getDoc(doc(db, "docs", id))).data();
+            const head = `<thead><tr><th>Spec</th><th>Description</th><th class="text-center">Qty</th><th class="text-right">Price</th></tr></thead>`;
+            const body = `<tbody>${d.items.map(x => `<tr><td class="font-mono">${x.code}</td><td>${x.name}</td><td class="text-center">${x.qty}</td><td class="text-right">${formatCurrency(x.cost || 0)}</td></tr>`).join('')}</tbody>`;
+            window.printDoc(d.docNo, 'Stock Receipt Summary', head + body);
+        };
+
+        // === 12. VERIFICATION ===
+        async function loadVerification() {
+            const items = await getDocs(collection(db, "items"));
+            document.getElementById('app').innerHTML = `
+             <div class="max-w-lg mx-auto mt-10">
+                    <div class="bg-white p-8 rounded-2xl shadow-xl border border-slate-100">
+                        <div class="flex items-center gap-4 mb-8">
+                             <div class="bg-indigo-100 p-3 rounded-xl text-indigo-600"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg></div>
+                             <div>
+                                 <h3 class="font-black text-2xl text-slate-800">Stock Adjustment</h3>
+                                 <p class="text-slate-400 text-sm">Correct stock discrepancies</p>
+                             </div>
+                        </div>
+                        
+                        <div class="space-y-5">
+                            <div><label class="block font-bold text-xs uppercase text-slate-400 mb-1">Select Item</label>
+                            <select id="v-i" class="w-full p-3 border border-slate-200 bg-slate-50 rounded-xl font-bold text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none" onchange="loadVerBatches()">${items.docs.map(i => `<option value="${i.data().code}">${i.data().name}</option>`).join('')}</select></div>
+                            
+                            <div><label class="block font-bold text-xs uppercase text-slate-400 mb-1">Select Batch</label>
+                            <select id="v-b" class="w-full p-3 border border-slate-200 bg-slate-50 rounded-xl font-medium text-sm outline-none"><option>Loading...</option></select></div>
+                            
+                            <div class="grid grid-cols-2 gap-4">
+                                <div><label class="block font-bold text-xs uppercase text-slate-400 mb-1">Adjust Qty (+/-)</label>
+                                <input id="v-q" type="number" class="w-full p-3 border border-slate-200 rounded-xl text-center font-bold" placeholder="-5"></div>
+                                
+                                <div><label class="block font-bold text-xs uppercase text-slate-400 mb-1">Reason</label>
+                                <input id="v-r" class="w-full p-3 border border-slate-200 rounded-xl" placeholder="Damaged..."></div>
+                            </div>
+                            
+                            <button onclick="saveVerPrep()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white p-4 rounded-xl font-black text-lg shadow-lg shadow-indigo-200 transition transform active:scale-95 mt-2">Post Adjustment</button>
+                        </div>
+                    </div>
+                </div>`;
+            window.loadVerBatches();
+        }
+        window.loadVerBatches = async () => {
+            const c = document.getElementById('v-i').value;
+            // FIXED: Proper query syntax
+            const s = await getDocs(query(collection(db, "stocks"), where("itemCode", "==", c), where("loc", "==", session.loc)));
+            const sel = document.getElementById('v-b');
+            sel.innerHTML = s.docs.map(d => `<option value="${d.id}">Exp: ${d.data().exp} (Qty: ${d.data().qty})</option>`).join('') + `<option value="NEW">--New Batch--</option>`;
+        };
+        window.saveVerPrep = () => {
+            const bid = document.getElementById('v-b').value;
+            const q = document.getElementById('v-q').value;
+            const c = document.getElementById('v-i').value;
+            const r = document.getElementById('v-r').value;
+            if (!q) return alert("Qty Required");
+            confirmAction("Adjust Stock?", "saveVerExec", c, bid, q, r);
+        };
+
+        window.saveVerExec = async (c, bid, qStr, r) => {
+            let exp = 'AUDIT';
+            if (bid === 'NEW') {
+                exp = prompt("Enter Expiry (YYYY-MM-DD) for new batch:");
+                if (!exp) return;
+            }
+
+            const q = parseFloat(qStr);
+            // const c = ... passed as arg
+
+
+            if (bid === 'NEW') {
+                await addDoc(collection(db, "stocks"), { itemCode: c, loc: session.loc, qty: q, exp, date: new Date().toISOString() });
+            } else {
+                const ref = doc(db, "stocks", bid);
+                const d = (await getDoc(ref)).data();
+                await updateDoc(ref, { qty: d.qty + q });
+            }
+
+            await logHistory(c, 'ADJUST', q, 'ADJ', session.loc);
+            alert("Adjusted");
+            loadVerification();
+            window.closeModal();
+        };
+
+        // === 13. BILLING / POS (Redesigned) ===
+        async function loadBilling() {
+            const items = (await getDocs(collection(db, "items"))).docs.map(d => d.data());
+            const cats = [...new Set(items.map(i => i.category || 'General'))];
+            window.cart = [];
+            window.activePosCat = 'All';
+
+            document.getElementById('app').innerHTML = `
+            <div class="flex flex-col lg:flex-row h-[calc(100vh-140px)] gap-4">
+                 <!-- LEFT: Category & Products -->
+                 <div class="w-full lg:w-[65%] flex flex-col gap-4">
+                     
+                     <!-- Category Pills -->
+                     <div class="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
+                         <button onclick="filterPosCat('All')" class="pos-cat-btn px-6 py-2.5 rounded-xl font-bold whitespace-nowrap transition bg-slate-800 text-white shadow-lg" id="cat-All">All Items</button>
+                         ${cats.map(c => `<button onclick="filterPosCat('${c}')" class="pos-cat-btn px-6 py-2.5 rounded-xl font-bold whitespace-nowrap transition bg-white text-slate-500 border border-slate-200 hover:border-blue-400" id="cat-${c}">${c}</button>`).join('')}
+                     </div>
+
+                     <!-- Search & Barcode -->
+                     <div class="flex gap-4">
+                          <div class="flex-1 relative">
+                               <input id="pos-search" placeholder="Search item by name or code..." class="w-full p-4 pl-12 bg-white border border-slate-200 rounded-2xl font-bold shadow-sm focus:ring-2 focus:ring-blue-500 outline-none" oninput="filterPosItems()">
+                               <svg class="w-6 h-6 absolute left-4 top-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                          </div>
+                          <div class="w-48 relative">
+                               <input id="pos-barcode" placeholder="Barcode..." class="w-full p-4 pl-12 bg-blue-50 border border-blue-200 rounded-2xl font-mono font-bold shadow-inner focus:ring-2 focus:ring-blue-500 outline-none" onkeydown="if(event.key==='Enter') handlePOSBarcode(this.value)">
+                               <svg class="w-6 h-6 absolute left-4 top-4 text-blue-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                          </div>
+                     </div>
+
+                     <!-- Item Grid -->
+                     <div id="pos-grid" class="flex-1 overflow-y-auto grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4 pr-2 custom-scrollbar">
+                         <!-- Items injected here -->
+                     </div>
+                 </div>
+
+                 <!-- RIGHT: Cart & Checkout -->
+                 <div class="w-full lg:w-[35%] flex flex-col bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden">
+                     <!-- Cart Header -->
+                     <div class="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                         <div>
+                             <h4 class="font-black text-slate-800 text-lg uppercase tracking-tight">Active Cart</h4>
+                             <p class="text-[10px] text-slate-400 font-bold uppercase tracking-widest" id="cart-item-count">0 items selected</p>
+                         </div>
+                         <button onclick="window.cart=[];renderCart()" class="text-xs font-black text-rose-500 hover:bg-rose-50 px-3 py-2 rounded-lg transition uppercase tracking-tighter">Clear All</button>
+                     </div>
+
+                     <!-- Cart Items -->
+                     <div id="cart-list" class="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+                         <div class="h-full flex flex-col items-center justify-center text-slate-300 opacity-50">
+                             <svg class="w-16 h-16 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg>
+                             <p class="font-bold uppercase text-xs tracking-widest">Cart Empty</p>
+                         </div>
+                     </div>
+
+                     <!-- Cart Footer / Totals -->
+                     <div class="p-6 bg-slate-900 text-white rounded-t-3xl shadow-2xl">
+                         <div class="space-y-3 mb-6">
+                             <div class="flex justify-between text-slate-400 text-sm font-bold">
+                                 <span>Subtotal</span>
+                                 <span id="pos-subtotal">Rs 0.00</span>
+                             </div>
+                             <div class="flex justify-between items-center">
+                                 <span class="text-slate-400 text-sm font-bold">Discount</span>
+                                 <input id="pos-disc" type="number" placeholder="0.00" class="w-24 bg-white/10 border-none rounded-lg text-right text-white font-bold p-1 px-2 focus:ring-1 focus:ring-blue-500" onkeyup="renderCart()">
+                             </div>
+                             <div class="pt-3 border-t border-white/10 flex justify-between items-center">
+                                 <span class="text-lg font-black uppercase tracking-widest">Total</span>
+                                 <span class="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-green-300">Rs <span id="pos-total">0.00</span></span>
+                             </div>
+                         </div>
+
+                         <button onclick="checkoutPrep()" class="w-full bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 active:scale-95 transition-all text-white p-5 rounded-2xl font-black text-xl uppercase tracking-wider shadow-lg flex items-center justify-center gap-3">
+                             <span>Process Payment</span>
+                             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9l4 4m0 0l-4 4m4-4H3"></path></svg>
+                         </button>
+                         
+                         <button onclick="viewOldBills()" class="w-full mt-3 text-slate-500 text-[10px] font-black uppercase tracking-[0.2em] hover:text-white transition py-2">View Recent Transactions</button>
+                     </div>
+                 </div>
+            </div>`;
+            
+            window.posItems = items;
+            filterPosItems();
+        }
+
+        window.filterPosCat = (cat) => {
+            window.activePosCat = cat;
+            document.querySelectorAll('.pos-cat-btn').forEach(b => {
+                b.classList.remove('bg-slate-800', 'text-white', 'shadow-lg');
+                b.classList.add('bg-white', 'text-slate-500', 'border', 'border-slate-200');
+            });
+            const btn = document.getElementById('cat-' + cat);
+            btn.classList.add('bg-slate-800', 'text-white', 'shadow-lg');
+            btn.classList.remove('bg-white', 'text-slate-500', 'border', 'border-slate-200');
+            filterPosItems();
+        };
+
+        window.filterPosItems = () => {
+            const q = document.getElementById('pos-search').value.toLowerCase();
+            const filtered = window.posItems.filter(i => {
+                const matchCat = window.activePosCat === 'All' || i.category === window.activePosCat;
+                const matchSearch = i.name.toLowerCase().includes(q) || i.code.toLowerCase().includes(q);
+                return matchCat && matchSearch;
+            });
+
+            document.getElementById('pos-grid').innerHTML = filtered.map(i => `
+                <div onclick="addToCart('${i.code}')" class="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-blue-200 hover:-translate-y-1 transition-all cursor-pointer group">
+                    <div class="aspect-square bg-slate-50 rounded-xl mb-3 flex items-center justify-center text-3xl opacity-40 group-hover:opacity-100 group-hover:bg-blue-50 transition-all">📦</div>
+                    <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">${i.category || 'General'}</div>
+                    <div class="font-bold text-slate-800 text-sm line-clamp-2 h-10 mb-2">${i.name}</div>
+                    <div class="flex justify-between items-center">
+                        <span class="font-black text-blue-600">Rs ${i.sell}</span>
+                        <div class="bg-slate-100 text-slate-400 px-2 py-0.5 rounded text-[8px] font-bold">STOCK: PIN</div>
+                    </div>
+                </div>
+            `).join('');
+        };
+
+        window.handlePOSBarcode = (barcode) => {
+            if(!barcode) return;
+            const item = window.posItems.find(i => i.barcode === barcode);
+            if(item) {
+                addToCart(item.code);
+                document.getElementById('pos-barcode').value = '';
+            } else {
+                alert("Barcode Not Recognized");
+            }
+        };
+
+        window.addToCart = (code) => {
+            const i = window.posItems.find(x => x.code === code);
+            const qty = parseFloat(document.getElementById('pos-qty')?.value || 1);
+            
+            const existing = window.cart.find(c => c.code === code);
+            if(existing) {
+                existing.qty += qty;
+            } else {
+                window.cart.push({ code: i.code, name: i.name, price: i.sell, qty });
+            }
+            window.renderCart();
+            if(document.getElementById('pos-qty')) document.getElementById('pos-qty').value = 1;
+        };
+
+        window.renderCart = () => {
+            let total = 0;
+            const discInput = document.getElementById('pos-disc');
+            const disc = parseFloat(discInput?.value || 0);
+
+            const html = window.cart.map((c, i) => {
+                const sub = c.qty * c.price;
+                total += sub;
+                return `
+                <div class="flex justify-between items-center bg-white p-4 rounded-2xl border border-slate-100 shadow-sm group">
+                    <div class="flex-1">
+                        <div class="font-bold text-slate-800 text-sm mb-1">${c.name}</div>
+                        <div class="flex items-center gap-3">
+                             <div class="flex items-center bg-slate-100 rounded-lg">
+                                 <button onclick="updateCartQty(${i}, -1)" class="px-2 text-slate-400 hover:text-blue-600">-</button>
+                                 <span class="px-2 font-mono text-xs font-bold text-slate-700">${c.qty}</span>
+                                 <button onclick="updateCartQty(${i}, 1)" class="px-2 text-slate-400 hover:text-blue-600">+</button>
+                             </div>
+                             <span class="text-[10px] text-slate-400 font-bold">@ Rs ${c.price.toFixed(2)}</span>
+                        </div>
+                    </div>
+                    <div class="text-right">
+                        <div class="font-black text-slate-700 text-sm">Rs ${sub.toFixed(2)}</div>
+                        <button onclick="window.cart.splice(${i},1);renderCart()" class="text-[10px] font-bold text-rose-300 hover:text-rose-500 uppercase tracking-tighter">Remove</button>
+                    </div>
+                </div>`;
+            }).join('');
+
+            document.getElementById('cart-list').innerHTML = html || `<div class="h-full flex flex-col items-center justify-center text-slate-300 opacity-50"><svg class="w-16 h-16 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg><p class="font-bold uppercase text-xs tracking-widest">Cart Empty</p></div>`;
+            
+            const final = total - disc;
+            if(document.getElementById('pos-total')){
+                document.getElementById('pos-total').innerText = final.toFixed(2);
+                document.getElementById('pos-subtotal').innerText = 'Rs ' + total.toFixed(2);
+                document.getElementById('cart-item-count').innerText = window.cart.length + ' items selected';
+            }
+        };
+
+        window.updateCartQty = (idx, delta) => {
+            window.cart[idx].qty += delta;
+            if(window.cart[idx].qty <= 0) window.cart.splice(idx, 1);
+            renderCart();
+        };
+
+        // --- COMPANY INFO MANAGEMENT ---
+        // --- COMPANY INFO MANAGEMENT ---
+
+        async function loadCompany() {
+            const snap = await getDoc(doc(db, "settings", "company"));
+            const d = snap.exists() ? snap.data() : { name: '', addr: '', tel: '', email: '', web: '', tax: '' };
+
+            document.getElementById('app').innerHTML = `
+                <div class="max-w-2xl mx-auto">
+                    <div class="card p-10 bg-white shadow-2xl relative overflow-hidden">
+                        <div class="absolute top-0 right-0 w-64 h-64 bg-slate-50 rounded-full -mr-32 -mt-32"></div>
+                        
+                        <div class="relative z-10">
+                            <h3 class="font-black text-3xl text-slate-800 mb-2 tracking-tight">Company Profile</h3>
+                            <p class="text-slate-500 mb-10 text-sm font-medium">This information will appear on all printed receipts and documents.</p>
+                            
+                            <div class="space-y-6">
+                                <div><label class="block text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-2">Legal Business Name</label>
+                                <input id="c-name" value="${d.name}" class="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-lg focus:ring-4 focus:ring-blue-500/10 outline-none transition-all"></div>
+                                
+                                <div><label class="block text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-2">Corporate Address</label>
+                                <textarea id="c-addr" rows="3" class="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-medium focus:ring-4 focus:ring-blue-500/10 outline-none transition-all">${d.addr}</textarea></div>
+                                
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div><label class="block text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-2">Phone Number</label>
+                                    <input id="c-tel" value="${d.tel}" class="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold"></div>
+                                    <div><label class="block text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-2">Email Address</label>
+                                    <input id="c-email" value="${d.email}" class="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold"></div>
+                                </div>
+
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div><label class="block text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-2">Website URL</label>
+                                    <input id="c-web" value="${d.web || ''}" class="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold"></div>
+                                    <div><label class="block text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-2">Tax/Reg Number</label>
+                                    <input id="c-tax" value="${d.tax || ''}" class="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold"></div>
+                                </div>
+
+                                <button onclick="saveCompany()" class="w-full bg-slate-900 border-2 border-slate-900 text-white p-5 rounded-2xl font-black text-xl hover:bg-white hover:text-slate-900 transition-all shadow-xl active:scale-95">Update Official Identity</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        window.saveCompany = async () => {
+            const data = {
+                name: document.getElementById('c-name').value,
+                addr: document.getElementById('c-addr').value,
+                tel: document.getElementById('c-tel').value,
+                email: document.getElementById('c-email').value,
+                web: document.getElementById('c-web').value,
+                tax: document.getElementById('c-tax').value,
+                updatedAt: new Date().toISOString()
+            };
+            await setDoc(doc(db, "settings", "company"), data);
+            alert("Company Profile Synchronized!");
+        };
+        window.checkoutPrep = () => {
+            if (window.cart.length === 0) return alert("Empty Cart");
+            confirmAction("Process Bill?", "checkoutExec");
+        };
+        window.checkoutExec = async () => {
+            const id = await generateID('BILL', 'docs');
+            const total = document.getElementById('pos-total').innerText;
+            const disc = document.getElementById('pos-disc').value;
+
+            // Deduct Stock (FIFO Logic simplified: Just reduce any batch)
+            const batch = writeBatch(db);
+            for (let c of window.cart) {
+                const qStock = query(collection(db, "stocks"), where("itemCode", "==", c.code), where("loc", "==", session.loc), where("qty", ">", 0), limit(5)); // get a few batches
+                const snaps = await getDocs(qStock);
+                let remaining = c.qty;
+
+                for (let s of snaps.docs) {
+                    if (remaining <= 0) break;
+                    const avail = s.data().qty;
+                    const take = Math.min(avail, remaining);
+                    batch.update(s.ref, { qty: avail - take });
+                    remaining -= take;
+                }
+
+                if (remaining > 0) console.warn("Negative Stock for " + c.code); // In a real app we block this
+                await logHistory(c.code, 'SALE', -c.qty, id);
+            }
+
+            await addDoc(collection(db, "docs"), {
+                docNo: id, type: 'BILL', total, discount: disc, items: window.cart, date: new Date().toISOString(), loc: session.loc
+            });
+
+            await batch.commit();
+            window.printDoc(`BILL: ${id} `, `Total: Rs ${total} `, `<thead><tr><th>Item</th><th>Qty</th><th>Price</th></tr></thead><tbody>${window.cart.map(x => `<tr><td>${x.name}</td><td>${x.qty}</td><td>${x.price}</td></tr>`).join('')}</tbody>`);
+            loadBilling();
+            window.closeModal();
+        };
+        window.viewOldBills = async () => {
+            const raw = await getDocs(query(collection(db, "docs"), where("type", "==", "BILL"), where("loc", "==", session.loc)));
+            const snap = { docs: raw.docs.sort((a, b) => new Date(b.data().date) - new Date(a.data().date)).slice(0, 20) };
+            const h = snap.docs.map(d => `<tr><td>${d.data().docNo}</td><td>${d.data().total}</td><td><button onclick="reprintBill('${d.id}')" class="text-blue-500 font-bold">Print</button></td></tr>`).join('');
+            openModal("Recent Bills", `<table class="w-full text-left"><thead><tr><th>No</th><th>Total</th><th></th></tr></thead><tbody>${h}</tbody></table>`);
+        };
+        window.reprintBill = async (id) => {
+            const d = (await getDoc(doc(db, "docs", id))).data();
+            window.printDoc(`BILL: ${d.docNo} `, `Date: ${formatDate(d.date)} <br>Total: Rs ${d.total}`, `<thead><tr><th>Item</th><th>Qty</th><th>Price</th></tr></thead><tbody>${d.items.map(x => `<tr><td>${x.name}</td><td>${x.qty}</td><td>${x.price}</td></tr>`).join('')}</tbody>`);
+        };
+
+        // === 14. BINCARD ===
+        async function loadBincard() {
+            const items = (await getDocs(collection(db, "items"))).docs.map(d => ({id: d.id, ...d.data()}));
+            
+            // Set default dates (past 30 days)
+            const d2 = new Date();
+            const d1 = new Date();
+            d1.setDate(d1.getDate() - 30);
+
+            document.getElementById('app').innerHTML = `
+            <div class="max-w-6xl mx-auto space-y-6">
+                <!-- Advanced Controls -->
+                <div class="card p-8 bg-white border border-slate-200">
+                    <div class="flex items-center gap-4 mb-8">
+                         <div class="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center text-2xl shadow-inner">📋</div>
+                         <div>
+                             <h3 class="font-black text-2xl text-slate-800 tracking-tight">Enterprise Inventory Bin Card</h3>
+                             <p class="text-slate-400 text-sm font-medium">Digital stock ledger & transaction tracking for <b>${session.loc}</b></p>
+                         </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-6 items-end">
+                        <div class="col-span-1 md:col-span-2">
+                             <label class="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Target Product Selection</label>
+                             <select id="bc-item" class="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-700 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all" onchange="renderBinCard()">
+                                 ${items.map(i => `<option value="${i.code}" data-name="${i.name}">${i.name} [${i.code}]</option>`).join('')}
+                             </select>
+                        </div>
+                        <div>
+                             <label class="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Transaction Type</label>
+                             <select id="bc-filter" class="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-600 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all" onchange="renderBinCard()">
+                                 <option value="ALL">All Transactions</option>
+                                 <option value="SALE">Direct Sales</option>
+                                 <option value="GRN">Stock Receipts (GRN)</option>
+                                 <option value="PRN">Returns (PRN)</option>
+                                 <option value="TR-OUT">Transfers Out</option>
+                                 <option value="TR-IN">Transfers In</option>
+                                 <option value="ADJUST">Inventory Adjustments</option>
+                             </select>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="renderBinCard()" class="flex-1 bg-blue-600 text-white p-4 rounded-2xl font-black shadow-lg hover:bg-blue-700 transition active:scale-95">Load Ledger</button>
+                            <button onclick="printBinCard()" class="bg-slate-800 text-white p-4 rounded-2xl font-black shadow-lg hover:bg-black transition active:scale-95">🖨️</button>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6 pt-6 border-t border-slate-100">
+                        <div>
+                             <label class="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Period Start</label>
+                             <input type="date" id="bc-d1" value="${d1.toISOString().split('T')[0]}" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none" onchange="renderBinCard()">
+                        </div>
+                        <div>
+                             <label class="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Period End</label>
+                             <input type="date" id="bc-d2" value="${d2.toISOString().split('T')[0]}" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none" onchange="renderBinCard()">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Snapshot Dashboard -->
+                <div id="bc-snap" class="grid grid-cols-2 md:grid-cols-4 gap-4"></div>
+
+                <!-- Ledger Table -->
+                <div id="bc-res" class="card overflow-hidden border border-slate-200 shadow-sm bg-white"></div>
+            </div>`;
+            renderBinCard();
+        }
+
+        window.renderBinCard = async () => {
+            const code = document.getElementById('bc-item').value;
+            const filter = document.getElementById('bc-filter').value;
+            const d1 = document.getElementById('bc-d1').value;
+            const d2 = document.getElementById('bc-d2').value + 'T23:59:59';
+            
+            const resDiv = document.getElementById('bc-res');
+            const snapDiv = document.getElementById('bc-snap');
+            resDiv.innerHTML = `<div class="p-20 text-center"><div class="animate-spin text-4xl mb-4">💠</div><p class="font-bold text-slate-400 text-xs uppercase tracking-widest">Processing Ledger Data...</p></div>`;
+
+            // 1. Fetch History
+            const q = query(collection(db, "history"), where("itemCode", "==", code), where("loc", "==", session.loc));
+            const snap = await getDocs(q);
+            let rawData = snap.docs.map(d => d.data()).sort((a,b) => new Date(a.date) - new Date(b.date));
+
+            // 2. Fetch Item Info for valuation
+            const itemSnap = await getDocs(query(collection(db, "items"), where("code", "==", code)));
+            const item = itemSnap.empty ? { cost: 0, sell: 0, minLevel: 10 } : itemSnap.docs[0].data();
+
+            // 3. Calculate Running Balance
+            let balance = 0;
+            let reportData = [];
+            let startBal = 0;
+
+            rawData.forEach(x => {
+                balance += x.qty;
+                if (new Date(x.date) < new Date(d1)) {
+                    startBal = balance;
+                } else if (new Date(x.date) <= new Date(d2)) {
+                    if (filter === 'ALL' || x.type === filter) {
+                        reportData.push({...x, finalBalance: balance});
+                    }
+                }
+            });
+
+            // Summary Stats
+            const totalIn = reportData.filter(x => x.qty > 0).reduce((a,c) => a+c.qty, 0);
+            const totalOut = Math.abs(reportData.filter(x => x.qty < 0).reduce((a,c) => a+c.qty, 0));
+
+            snapDiv.innerHTML = `
+                <div class="card p-5 bg-white border-l-4 border-blue-500">
+                    <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Current Stock</div>
+                    <div class="text-xl font-black text-slate-800">${balance} Units</div>
+                </div>
+                <div class="card p-5 bg-white border-l-4 border-green-500">
+                    <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Stock Portfolio Value</div>
+                    <div class="text-xl font-black text-slate-800">${formatCurrency(balance * item.cost).replace("Rs ","")}</div>
+                </div>
+                 <div class="card p-5 bg-white border-l-4 border-emerald-500">
+                    <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Received</div>
+                    <div class="text-xl font-black text-slate-800">+${totalIn}</div>
+                </div>
+                 <div class="card p-5 bg-white border-l-4 border-rose-500">
+                    <div class="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Issued</div>
+                    <div class="text-xl font-black text-slate-800">-${totalOut}</div>
+                </div>
+            `;
+
+            const rows = reportData.reverse().map(x => {
+                const isPos = x.qty > 0;
+                return `
+                <tr class="hover:bg-slate-50 transition border-b border-slate-100 last:border-none">
+                    <td class="p-4">
+                        <div class="text-sm font-bold text-slate-700">${new Date(x.date).toLocaleDateString()}</div>
+                        <div class="text-[10px] text-slate-400 font-mono">${new Date(x.date).toLocaleTimeString()}</div>
+                    </td>
+                    <td class="p-4">
+                        <span class="px-2 py-1 rounded text-[10px] font-black uppercase tracking-wider ${isPos ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">${x.type}</span>
+                    </td>
+                    <td class="p-4">
+                        <div class="text-xs font-black text-slate-800 underline decoration-slate-200">${x.docNo}</div>
+                        <div class="text-[10px] text-slate-400 font-medium">${x.user || 'System'}</div>
+                    </td>
+                    <td class="p-4 text-center font-black ${isPos ? 'text-green-600' : 'text-slate-400'}">${isPos ? '+' + x.qty : '-'}</td>
+                    <td class="p-4 text-center font-black ${!isPos ? 'text-red-500' : 'text-slate-400'}">${!isPos ? Math.abs(x.qty) : '-'}</td>
+                    <td class="p-4 text-right">
+                         <div class="font-black text-slate-800 text-base">${x.finalBalance}</div>
+                         <div class="text-[9px] text-slate-400 font-bold uppercase tracking-tighter">Balance Units</div>
+                    </td>
+                </tr>`;
+            }).join('');
+
+            resDiv.innerHTML = `
+                <div class="bg-slate-50 p-4 border-b border-slate-200 flex justify-between items-center">
+                    <div class="text-[10px] font-black text-slate-500 uppercase tracking-widest">Opening Balance: <span class="text-blue-600">${startBal}</span></div>
+                    <button onclick="exportToExcel('bc-table', 'Bincard_${code}')" class="text-[10px] font-black text-green-600 hover:underline uppercase tracking-widest">Export Transaction Log</button>
+                </div>
+                <table id="bc-table" class="w-full text-left">
+                    <thead class="bg-white text-[10px] font-black uppercase text-slate-400 border-b border-slate-100">
+                        <tr><th class="p-4">Timestamp</th><th class="p-4">Type</th><th class="p-4">Reference</th><th class="p-4 text-center">In (+)</th><th class="p-4 text-center">Out (-)</th><th class="p-4 text-right">Balance</th></tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">${rows}</tbody>
+                </table>
+                ${reportData.length === 0 ? '<div class="p-20 text-center text-slate-300 font-bold italic tracking-wide">No transactions found for the selected criteria.</div>' : ''}
+            `;
+        };
+
+        window.printBinCard = () => {
+            const item = document.getElementById('bc-item');
+            const itemName = item.options[item.selectedIndex].dataset.name;
+            const code = item.value;
+            const start = document.getElementById('bc-d1').value;
+            const end = document.getElementById('bc-d2').value;
+            const table = document.getElementById('bc-res').innerHTML;
+            
+            printDoc(`BIN CARD: ${code}`, `
+                <div style="font-size: 14px; margin-bottom: 20px;">
+                    <b>Product:</b> ${itemName} (${code})<br>
+                    <b>Location:</b> ${session.loc}<br>
+                    <b>Period:</b> ${start} to ${end}
+                </div>
+                <style>
+                    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+                    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                    th { bg-color: #f8f9fa; }
+                    .text-right { text-align: right; }
+                    .text-center { text-align: center; }
+                </style>
+                ${table}
+            `, '');
+        };
+
+        // === 15. REPORTS ===
+        async function loadReports() {
+            const d2 = new Date();
+            const d1 = new Date();
+            d1.setDate(d1.getDate() - 30);
+
+            document.getElementById('app').innerHTML = `
+            <div class="flex flex-col lg:flex-row gap-6">
+                <!-- Report Sidebar -->
+                <div class="w-full lg:w-72 space-y-4">
+                    <div class="card p-6 border border-slate-200">
+                        <h3 class="text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-4">Enterprise Analysis</h3>
+                        <div class="space-y-2">
+                             <button onclick="selectReport('SALES')" class="rep-btn w-full p-4 rounded-xl text-left font-bold flex items-center justify-between group bg-blue-50 text-blue-600 transition" id="btn-SALES">
+                                <span>💰 Sales Summary</span>
+                                <span class="text-xl opacity-0 group-hover:opacity-100 transition">→</span>
+                             </button>
+                             <button onclick="selectReport('STOCK')" class="rep-btn w-full p-4 rounded-xl text-left font-bold flex items-center justify-between group text-slate-500 hover:bg-slate-50 transition" id="btn-STOCK">
+                                <span>📦 Stock Valuation</span>
+                                <span class="text-xl opacity-0 group-hover:opacity-100 transition">→</span>
+                             </button>
+                             <button onclick="selectReport('EXP')" class="rep-btn w-full p-4 rounded-xl text-left font-bold flex items-center justify-between group text-slate-500 hover:bg-slate-50 transition" id="btn-EXP">
+                                <span>⚠️ Expiry Matrix</span>
+                                <span class="text-xl opacity-0 group-hover:opacity-100 transition">→</span>
+                             </button>
+                             <button onclick="selectReport('AUDIT')" class="rep-btn w-full p-4 rounded-xl text-left font-bold flex items-center justify-between group text-slate-500 hover:bg-slate-50 transition" id="btn-AUDIT">
+                                <span>🔍 Transaction Audit</span>
+                                <span class="text-xl opacity-0 group-hover:opacity-100 transition">→</span>
+                             </button>
+                             <button onclick="selectReport('LOW')" class="rep-btn w-full p-4 rounded-xl text-left font-bold flex items-center justify-between group text-slate-500 hover:bg-slate-50 transition" id="btn-LOW">
+                                <span>🔔 Shortage Report</span>
+                                <span class="text-xl opacity-0 group-hover:opacity-100 transition">→</span>
+                             </button>
+                             <button onclick="selectReport('TRANSFERS')" class="rep-btn w-full p-4 rounded-xl text-left font-bold flex items-center justify-between group text-slate-500 hover:bg-slate-50 transition" id="btn-TRANSFERS">
+                                <span>🚚 Transfer Logistics</span>
+                                <span class="text-xl opacity-0 group-hover:opacity-100 transition">→</span>
+                             </button>
+                             <button onclick="selectReport('PERFORMANCE')" class="rep-btn w-full p-4 rounded-xl text-left font-bold flex items-center justify-between group text-slate-500 hover:bg-slate-50 transition" id="btn-PERFORMANCE">
+                                <span>📈 Value Analytics</span>
+                                <span class="text-xl opacity-0 group-hover:opacity-100 transition">→</span>
+                             </button>
+                        </div>
+                    </div>
+
+                    <div class="card p-6 bg-slate-900 text-white">
+                        <h4 class="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-2 font-mono underline decoration-slate-700">Quick Tips</h4>
+                        <p class="text-[11px] leading-relaxed text-slate-400 font-medium italic opacity-80">"Review your Expiry Matrix weekly to minimize waste and optimize inventory turnover."</p>
+                    </div>
+                </div>
+
+                <!-- Report Content Area -->
+                <div class="flex-1 space-y-6">
+                    <!-- Global Filters -->
+                    <div class="card p-6 border border-slate-200">
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
+                            <div>
+                                <label class="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Period Range (Start)</label>
+                                <input type="date" id="rep-d1" value="${d1.toISOString().split('T')[0]}" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Period Range (End)</label>
+                                <input type="date" id="rep-d2" value="${d2.toISOString().split('T')[0]}" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold">
+                            </div>
+                            <div>
+                                <button onclick="generateReport()" class="w-full bg-blue-600 text-white p-4 rounded-xl font-black shadow-lg hover:bg-blue-700 transition active:scale-95">Fetch Analysis</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Report Table Partition -->
+                    <div id="rep-partition" class="space-y-6">
+                        <div class="p-20 text-center opacity-50 bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
+                             <div class="text-4xl mb-4">📊</div>
+                             <p class="font-bold text-slate-400 uppercase text-xs tracking-[0.2em] animate-pulse">Select Report Type & Load Data</p>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+            
+            window.activeReport = 'SALES';
+        }
+
+        window.selectReport = (id) => {
+            window.activeReport = id;
+            document.querySelectorAll('.rep-btn').forEach(b => {
+                b.classList.remove('bg-blue-50', 'text-blue-600');
+                b.classList.add('text-slate-500', 'hover:bg-slate-50');
+            });
+            const active = document.getElementById(`btn-${id}`);
+            active.classList.add('bg-blue-50', 'text-blue-600');
+            active.classList.remove('text-slate-500', 'hover:bg-slate-50');
+            generateReport();
+        };
+
+        window.generateReport = async () => {
+            const partition = document.getElementById('rep-partition');
+            const d1 = document.getElementById('rep-d1').value;
+            const d2 = document.getElementById('rep-d2').value + 'T23:59:59';
+            const loc = session.loc;
+
+            partition.innerHTML = `<div class="p-20 text-center"><div class="animate-spin text-4xl mb-4">🌀</div><p class="font-bold text-slate-400 text-xs uppercase tracking-widest">Aggregating Cloud Data...</p></div>`;
+
+            let records = [];
+            let columns = [];
+            let fileName = "";
+
+            if (window.activeReport === 'SALES') {
+                const snap = await getDocs(query(collection(db, "docs"), where("type", "in", ["BILL", "C-RET"]), where("loc", "==", loc)));
+                const data = snap.docs.filter(d => d.data().date >= d1 && d.data().date <= d2).map(d => d.data());
+                records = data.map(d => ({
+                    Date: new Date(d.date).toLocaleDateString(),
+                    Time: new Date(d.date).toLocaleTimeString(),
+                    Type: d.type === 'BILL' ? 'SALE' : 'RETURN',
+                    DocNo: d.docNo,
+                    Customer: d.customer || '-',
+                    NetTotal: formatCurrency(d.total).replace("Rs ","")
+                }));
+                columns = ["Date", "Time", "Type", "DocNo", "Customer", "NetTotal"];
+                fileName = `Sales_Performance_${loc}`;
+            } else if (window.activeReport === 'STOCK') {
+                const stockSnap = await getDocs(query(collection(db, "stocks"), where("loc", "==", loc)));
+                const itemSnap = await getDocs(collection(db, "items"));
+                const itemsMap = {};
+                itemSnap.docs.forEach(d => itemsMap[d.data().code] = d.data());
+
+                records = stockSnap.docs.map(d => {
+                    const s = d.data();
+                    const i = itemsMap[s.itemCode] || { name: '?', category: '?', cost: 0 };
+                    return {
+                        Code: s.itemCode,
+                        Name: i.name,
+                        Category: i.category || 'General',
+                        Batch: s.batch,
+                        Expiry: s.exp || 'N/A',
+                        Qty: s.qty,
+                        Cost: formatCurrency(i.cost).replace("Rs ",""),
+                        TotalValue: formatCurrency(s.qty * i.cost).replace("Rs ","")
+                    };
+                }).filter(r => r.Qty > 0);
+                columns = ["Code", "Name", "Category", "Batch", "Expiry", "Qty", "Cost", "TotalValue"];
+                fileName = `Full_Stock_Valuation_${loc}`;
+            } else if (window.activeReport === 'EXP') {
+                const stockSnap = await getDocs(query(collection(db, "stocks"), where("loc", "==", loc)));
+                const itemSnap = await getDocs(collection(db, "items"));
+                const itemsMap = {}; itemSnap.forEach(d => itemsMap[d.data().code] = d.data());
+                const now = new Date(); const warning = new Date(); warning.setMonth(warning.getMonth() + 6);
+
+                records = stockSnap.docs.map(d => {
+                    const s = d.data(); const expD = new Date(s.exp);
+                    const status = expD < now ? 'EXPIRED' : expD < warning ? 'NEAR-EXPIRY' : 'OK';
+                    if(status === 'OK' || s.qty <= 0) return null;
+                    const i = itemsMap[s.itemCode] || { name: '?' };
+                    return { Status: status, Code: s.itemCode, ItemName: i.name, BatchID: s.batch, ExpiryDate: s.exp, CurrentQty: s.qty };
+                }).filter(r => r !== null);
+                columns = ["Status", "Code", "ItemName", "BatchID", "ExpiryDate", "CurrentQty"];
+                fileName = `Expiry_Analysis_${loc}`;
+            } else if (window.activeReport === 'AUDIT') {
+                const snap = await getDocs(query(collection(db, "history"), where("loc", "==", loc)));
+                const data = snap.docs.filter(d => d.data().date >= d1 && d.data().date <= d2).map(d => d.data());
+                records = data.sort((a,b) => new Date(b.date) - new Date(a.date)).map(d => ({
+                    Timestamp: new Date(d.date).toLocaleString(),
+                    Type: d.type,
+                    Product: d.itemCode,
+                    DocRef: d.docNo,
+                    QtyChange: d.qty > 0 ? '+' + d.qty : d.qty,
+                    ActionBy: d.user || '-'
+                }));
+                columns = ["Timestamp", "Type", "Product", "DocRef", "QtyChange", "ActionBy"];
+                fileName = `Transaction_Audit_Log_${loc}`;
+            } else if (window.activeReport === 'LOW') {
+                 const itemSnap = await getDocs(collection(db, "items"));
+                 const stockSnap = await getDocs(query(collection(db, "stocks"), where("loc", "==", loc)));
+                 const stockTotals = {}; stockSnap.forEach(s => { stockTotals[s.data().itemCode] = (stockTotals[s.data().itemCode] || 0) + s.data().qty; });
+
+                 records = itemSnap.docs.map(d => {
+                     const i = d.data(); const current = stockTotals[i.code] || 0; const min = i.minLevel || 10;
+                     if(current >= min) return null;
+                     return { Code: i.code, ItemName: i.name, Current: current, MinReq: min, Shortage: min - current, Status: current <= 0 ? 'OUT' : 'LOW' };
+                 }).filter(r => r !== null);
+                 columns = ["Code", "ItemName", "Current", "MinReq", "Shortage", "Status"];
+                 fileName = `Shortage_Report_${loc}`;
+            } else if (window.activeReport === 'TRANSFERS') {
+                const snapOut = await getDocs(query(collection(db, "docs"), where("type", "==", "T-OUT"), where("loc", "==", loc)));
+                const snapIn = await getDocs(query(collection(db, "docs"), where("type", "==", "T-IN"), where("loc", "==", loc)));
+                const oData = snapOut.docs.filter(d => d.data().date >= d1 && d.data().date <= d2).map(d => ({...d.data(), dir: 'OUT'}));
+                const iData = snapIn.docs.filter(d => d.data().date >= d1 && d.data().date <= d2).map(d => ({...d.data(), dir: 'IN'}));
+                const all = [...oData, ...iData].sort((a,b) => new Date(b.date) - new Date(a.date));
+                
+                records = all.map(d => ({
+                    Date: new Date(d.date).toLocaleString(),
+                    DocNo: d.docNo,
+                    Direction: d.dir,
+                    Counterparty: d.dir === 'OUT' ? d.to : d.from,
+                    Ref: d.ref || '-',
+                    ActionBy: d.user || '-'
+                }));
+                columns = ["Date", "DocNo", "Direction", "Counterparty", "Ref", "ActionBy"];
+                fileName = `Transfer_Logistics_${loc}`;
+             } else if (window.activeReport === 'PERFORMANCE') {
+                 // Fetch all items
+                 const itmRef = await getDocs(collection(db, "items"));
+                 const itemMap = {}; itmRef.forEach(d => itemMap[d.data().code] = d.data());
+                 const stockRef = await getDocs(query(collection(db, "stocks"), where("loc", "==", loc)));
+                 
+                 let totalSalesRef = await getDocs(query(collection(db, "docs"), where("type", "==", "BILL"), where("loc", "==", loc)));
+                 const validSales = totalSalesRef.docs.filter(d => d.data().date >= d1 && d.data().date <= d2).map(d => d.data());
+                 
+                 // Aggregate sales total
+                 let revenue = 0;
+                 validSales.forEach(s => revenue += s.total);
+                 
+                 records = [{
+                     Metric: "Total Period Sales",
+                     Value: formatCurrency(revenue)
+                 }, {
+                     Metric: "Unique Transactions",
+                     Value: validSales.length
+                 }, {
+                     Metric: "Average Transaction Value",
+                     Value: validSales.length > 0 ? formatCurrency(revenue/validSales.length) : formatCurrency(0)
+                 }];
+                 columns = ["Metric", "Value"];
+                 fileName = `Value_Analytics_${loc}`;
+                 
+                 // Generate Graph UI hook
+                 partition.innerHTML = `
+                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                    <div class="card p-6 bg-slate-900 border border-slate-800 rounded-3xl flex flex-col justify-center items-center shadow-xl">
+                         <div class="text-[10px] uppercase font-black tracking-[0.3em] text-slate-500 mb-2">Total System Turnover</div>
+                         <div class="text-5xl font-black text-emerald-400 bg-emerald-900/30 px-6 py-2 rounded-2xl border border-emerald-500/20">\${formatCurrency(revenue).replace("Rs ","")}</div>
+                    </div>
+                    <div class="card p-6 border border-slate-200 rounded-3xl shadow-sm relative overflow-hidden bg-white">
+                         <canvas id="revChart" height="150" class="relative z-10"></canvas>
+                         <div class="absolute inset-0 bg-gradient-to-tr from-blue-50/50 to-transparent pointer-events-none"></div>
+                    </div>
+                 </div>
+                 <div class="card overflow-x-auto border border-slate-200 rounded-3xl bg-white shadow-sm">
+                     <table class="w-full text-left">
+                        <thead class="bg-slate-50 text-[9px] font-black uppercase text-slate-400">
+                            <tr>\${columns.map(c => \`<th class="p-4 border-b border-slate-100">\${c}</th>\`).join('')}</tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100 italic transition-all">
+                            \${records.map(r => \`<tr class="hover:bg-slate-50 transition group"><td class="p-4 text-xs font-bold text-slate-500 group-hover:text-blue-600 border-r border-slate-50">\${r.Metric}</td><td class="p-4 text-sm font-black text-slate-800">\${r.Value}</td></tr>\`).join('')}
+                        </tbody>
+                     </table>
+                 </div>`;
+                 
+                 window.lastReportData = records; window.lastReportFile = fileName;
+                 
+                 // Hook Chart JS 
+                 setTimeout(() => {
+                     const ctx = document.getElementById('revChart');
+                     if(ctx) {
+                         new Chart(ctx, {
+                             type: 'bar',
+                             data: {
+                                 labels: ['Sales Trajectory Period'],
+                                 datasets: [{ label: 'Gross Revenue Target', data: [revenue], backgroundColor: '#10b981', borderRadius: 10, barThickness: 40 }]
+                             },
+                             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display:false } }, scales: { y: { display: false }, x: { grid: { display: false }, border: { display: false } } } }
+                         });
+                     }
+                 }, 500);
+                 
+                 return; // Abort standard render
+             }
+
+            if(records.length === 0) {
+                partition.innerHTML = `<div class="p-20 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200"><p class="font-bold text-slate-400">No data found</p></div>`;
+                return;
+            }
+
+            partition.innerHTML = `
+                <div class="flex justify-between items-center bg-slate-50 p-6 rounded-t-3xl border-x border-t border-slate-200">
+                     <span class="text-[10px] font-black uppercase text-slate-500 tracking-[0.2em]">Preview (${records.length})</span>
+                     <button onclick="downloadReportExcel()" class="bg-emerald-600 text-white px-6 py-2 rounded-xl font-black text-xs">📥 Download EXCEL</button>
+                </div>
+                <div class="card overflow-x-auto border border-slate-200 rounded-b-3xl">
+                     <table class="w-full text-left" id="rep-table">
+                        <thead class="bg-slate-50 text-[9px] font-black uppercase text-slate-400">
+                            <tr>${columns.map(c => `<th class="p-4 border-b border-slate-100">${c}</th>`).join('')}</tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100 italic transition-all">
+                            ${records.map(r => `<tr class="hover:bg-slate-50 border-b border-slate-50 last:border-none">${columns.map(c => `<td class="p-4 text-xs font-bold text-slate-700">${r[c]}</td>`).join('')}</tr>`).join('')}
+                        </tbody>
+                     </table>
+                </div>`;
+            
+            window.lastReportData = records;
+            window.lastReportFile = fileName;
+        };
+
+        window.downloadReportExcel = () => {
+            if(!window.lastReportData) return;
+            const ws = XLSX.utils.json_to_sheet(window.lastReportData);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+            XLSX.writeFile(wb, `${window.lastReportFile}_${new Date().getTime()}.xlsx`);
+        };
+
+        // === 16. RESTOCK & LIVE VIDEO FIXES ===
+
+        async function loadRestockList() {
+            document.getElementById('app').innerHTML = `<div class="p-20 text-center"><div class="animate-spin text-4xl mb-4">🔄</div><p class="font-bold text-slate-400 text-xs uppercase tracking-widest">Compiling Restock Intelligence...</p></div>`;
+            try {
+                const itemSnap = await getDocs(collection(db, "items"));
+                const stockSnap = await getDocs(query(collection(db, "stocks"), where("loc", "==", session.loc)));
+                
+                const stockTotals = {};
+                stockSnap.forEach(s => { stockTotals[s.data().itemCode] = (stockTotals[s.data().itemCode] || 0) + s.data().qty; });
+
+                const records = itemSnap.docs.map(d => {
+                    const i = d.data();
+                    const current = stockTotals[i.code] || 0;
+                    const min = i.minLevel || 10;
+                    if(current >= min) return null;
+                    return { code: i.code, name: i.name, supplier: i.supplier || 'N/A', current, min, requirement: min - current, cost: i.cost };
+                }).filter(r => r !== null);
+
+                let totalCost = 0;
+                const rows = records.map(r => {
+                    totalCost += r.requirement * r.cost;
+                    return `<tr class="border-b border-slate-100 hover:bg-slate-50 transition">
+                        <td class="p-3 font-bold text-slate-800">${r.code}</td>
+                        <td class="p-3 text-slate-600">${r.name}</td>
+                        <td class="p-3 text-blue-600 font-bold max-w-[120px] truncate">${r.supplier}</td>
+                        <td class="p-3 text-center font-black ${r.current <= 0 ? 'text-red-500' : 'text-amber-500'}">${r.current}</td>
+                        <td class="p-3 text-center text-slate-400">${r.min}</td>
+                        <td class="p-3 text-center text-emerald-600 font-black text-lg bg-emerald-50">${r.requirement}</td>
+                        <td class="p-3 text-right font-mono font-bold text-slate-700">${formatCurrency(r.requirement * r.cost)}</td>
+                    </tr>`;
+                }).join('');
+
+                document.getElementById('app').innerHTML = `
+                <div class="max-w-6xl mx-auto space-y-6 animate-[fade-in_0.3s_ease]">
+                    <div class="card p-6 bg-slate-900 border border-slate-800 flex flex-col md:flex-row justify-between items-start md:items-center relative overflow-hidden gap-6 shadow-2xl">
+                        <div class="absolute inset-0 opacity-10 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMiIgY3k9IjIiIHI9IjIiIGZpbGw9IiM0ZjQ2ZTUiIGZpbGwtb3BhY2l0eT0iMSIvPjwvc3ZnPg==')] mix-blend-overlay"></div>
+                        <div class="relative z-10 w-full mb-4 md:mb-0">
+                            <h2 class="text-3xl font-black text-white tracking-tight flex items-center gap-3">
+                                <span class="text-emerald-500">📥</span> Master Restock Schedule
+                            </h2>
+                            <p class="text-slate-400 text-xs mt-2 uppercase tracking-widest font-bold">Priority Location Routing: ${session.loc}</p>
+                        </div>
+                        <div class="relative z-10 flex shrink-0 gap-3">
+                            <button onclick="window.printRestock()" class="bg-indigo-600 hover:bg-indigo-500 hover:-translate-y-1 text-white px-8 py-4 rounded-2xl font-black transition-all shadow-xl shadow-indigo-600/30 flex items-center gap-3 uppercase text-xs tracking-widest border border-indigo-500">
+                                <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
+                                Print Directives
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div class="card p-6 border border-slate-200 bg-white shadow-sm flex items-center justify-between">
+                            <div>
+                                <div class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-1">Total Shortage Items</div>
+                                <div class="text-5xl font-black text-rose-500">${records.length}</div>
+                            </div>
+                            <div class="w-12 h-12 bg-rose-50 rounded-full flex justify-center items-center text-rose-500 shadow-inner">📦</div>
+                        </div>
+                        <div class="card p-6 border border-slate-200 bg-white shadow-sm flex items-center justify-between">
+                            <div>
+                                <div class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-1">Est. Procurement Cost</div>
+                                <div class="text-3xl font-black text-slate-800 tracking-tighter">${formatCurrency(totalCost).replace("Rs ","")}</div>
+                            </div>
+                            <div class="w-12 h-12 bg-slate-100 rounded-full flex justify-center items-center text-slate-500 shadow-inner">💰</div>
+                        </div>
+                        <div class="card p-6 border-2 border-emerald-500 bg-emerald-50 content-center text-center shadow-[0_0_20px_rgba(16,185,129,0.15)] relative overflow-hidden">
+                            <div class="absolute top-0 right-0 w-16 h-16 bg-emerald-100 rounded-bl-full shadow-inner flex justify-end items-start p-3 text-emerald-500 font-bold">&#10003;</div>
+                            <div class="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-600 mb-2">Requirement Status</div>
+                            <div class="text-xl font-black text-emerald-800 uppercase animate-pulse tracking-widest border-b-2 border-emerald-200 inline-block pb-1">Action Active</div>
+                        </div>
+                    </div>
+
+                    <div class="card overflow-hidden border border-slate-200 bg-white shadow-sm">
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left text-sm whitespace-nowrap">
+                                <thead class="bg-gray-50 text-[10px] uppercase font-black tracking-widest text-slate-500 border-b border-slate-200">
+                                    <tr>
+                                        <th class="p-5">SKU / Code</th>
+                                        <th class="p-5">Product Matrix</th>
+                                        <th class="p-5">Preferred Matrix Partner</th>
+                                        <th class="p-5 text-center">On-Hand Unit</th>
+                                        <th class="p-5 text-center">Protocol Base</th>
+                                        <th class="p-5 text-center bg-gray-100 border-l border-r border-gray-200">Deficit Required</th>
+                                        <th class="p-5 text-right">Fund Allocation Limit</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${rows}
+                                </tbody>
+                            </table>
+                            ${records.length === 0 ? `<div class="p-16 text-center text-emerald-500 font-black uppercase tracking-widest text-sm bg-emerald-50/50"><div class="text-4xl mb-3">✅</div>Inventory levels optimal. No acquisition required.</div>` : ''}
+                        </div>
+                    </div>
+                </div>`;
+
+                window.printRestock = () => {
+                    const tableHtml = `<tr><th>Code</th><th>Product Matrix</th><th>Supply Partner</th><th style="text-align:center">Net Hand</th><th style="text-align:center">Procurement Target (Deficit)</th></tr>` + records.map(r => `<tr><td>${r.code}</td><td>${r.name}</td><td>${r.supplier}</td><td style="text-align:center">${r.current}</td><td style="text-align:center; font-weight:800; font-size:16px; color:#059669">${r.requirement}</td></tr>`).join('');
+                    printDoc('Restock Logistics & Directive Protocol', '', tableHtml);
+                };
+
+            } catch (err) {
+                console.error(err);
+                alert("Failed to compile restock intelligence protocol.");
+            }
+        }
+
+        async function loadLiveVideo() {
+            document.getElementById('app').innerHTML = `
+                <div class="h-[calc(100vh-6rem)] flex flex-col space-y-6 animate-[fade-in_0.4s_ease]">
+                    <div class="card p-6 bg-slate-900 border border-slate-800 flex flex-col md:flex-row justify-between items-start md:items-center rounded-3xl shrink-0 shadow-2xl relative overflow-hidden">
+                        <div class="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-red-500/10 to-transparent pointer-events-none mix-blend-overlay"></div>
+                    
+                        <div class="flex items-center gap-5 relative z-10 w-full mb-4 md:mb-0 pb-4 md:pb-0 border-b md:border-b-0 border-slate-800">
+                            <div class="w-4 h-4 bg-red-600 rounded-full animate-pulse shadow-[0_0_15px_rgba(220,38,38,1)] border-2 border-red-400"></div>
+                            <div>
+                                <h2 class="text-2xl font-black text-white tracking-tight uppercase flex items-center gap-3">
+                                    Security Operations Center
+                                </h2>
+                                <span class="text-[10px] font-bold font-mono text-slate-400 bg-slate-950 px-3 py-1 rounded-full border border-slate-700 mt-2 inline-block">LIVE FEED • SURVEILLANCE MATRIX INTERCEPT • NODE [${session.loc}]</span>
+                            </div>
+                        </div>
+                        <div class="flex gap-3 relative z-10 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
+                            <button onclick="toggleCamGrid(1)" class="whitespace-nowrap bg-slate-800 text-white px-5 py-3 rounded-xl font-bold hover:bg-slate-700 transition border border-slate-600 text-xs tracking-widest uppercase flex items-center gap-2">
+                                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                                Focus Intercept
+                            </button>
+                            <button onclick="toggleCamGrid(4)" class="whitespace-nowrap bg-rose-600 text-white px-5 py-3 rounded-xl font-black hover:bg-rose-500 transition shadow-xl shadow-rose-600/20 border border-rose-500 text-xs tracking-widest uppercase flex items-center gap-2">
+                                <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z"></path></svg>
+                                Grid Matrix Layout
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="cctv-grid" class="flex-1 grid grid-cols-2 gap-6 auto-rows-fr rounded-3xl overflow-hidden bg-black p-6 border-2 border-slate-900 relative shadow-2xl">
+                        <div class="absolute inset-0 pointer-events-none border-8 border-slate-800/50 rounded-3xl z-50 mix-blend-overlay shadow-[inset_0_0_100px_rgba(0,0,0,0.9)]"></div>
+                    </div>
+                </div>`;
+
+            window.toggleCamGrid = (count) => {
+                const grid = document.getElementById('cctv-grid');
+                grid.className = \`flex-1 grid \${count === 1 ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'} gap-6 auto-rows-fr rounded-3xl overflow-hidden bg-black p-6 border-2 border-slate-900 relative shadow-2xl\`;
+                grid.innerHTML = '';
+                
+                const locations = ["MAIN PERIMETER ENTRANCE", "LOADING DOCK ALPHA", "INTERIOR WAREHOUSE MATRIX", "POINT OF SALE SECURE REGISTER"];
+                for(let i=0; i<count; i++) {
+                    grid.innerHTML += \`
+                        <div class="relative bg-slate-950 rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center group border border-slate-800 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMiIgY3k9IjIiIHI9IjEiIGZpbGw9IiMzMzMiIGZpbGwtb3BhY2l0eT0iMC41Ii8+PC9zdmc+')]">
+                            
+                            <video id="vid-\${i}" class="absolute inset-0 w-full h-full object-cover opacity-70 mix-blend-screen scale-[1.03] grayscale sepia-[.3] hue-rotate-[180deg]" autoplay muted playsinline></video>
+                            
+                            <div class="absolute inset-0 pointer-events-none bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNCIgaGVpZ2h0PSI0IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxyZWN0IHdpZHRoPSI0IiBoZWlnaHQ9IjEiIGZpbGw9IiMwMDAiIGZpbGwtb3BhY2l0eT0iMC4yNSIvPjwvc3ZnPg==')] z-10 opacity-40 mix-blend-multiply"></div>
+                            
+                            <!-- Tactical HUD Overlays -->
+                            <div class="absolute top-4 left-4 z-20 flex flex-col gap-2">
+                                <span class="bg-black/90 text-white font-mono text-[10px] px-3 py-1 rounded shadow-lg border border-white/20 uppercase tracking-[0.3em] font-black backdrop-blur-md">\${locations[i] || 'INTERCEPT NODE '+i}</span>
+                                <span class="bg-red-500 text-white font-mono text-[9px] px-2 py-1 rounded shadow-[0_0_15px_rgba(239,68,68,0.5)] uppercase tracking-widest font-black w-fit flex items-center gap-1.5"><span class="w-2 h-2 bg-white rounded-full inline-block animate-[pulse_1s_infinite]"></span>REC ACTIVE</span>
+                            </div>
+
+                            <div class="absolute bottom-4 left-4 z-20 flex flex-col gap-1">
+                                 <span class="font-mono text-[10px] text-white/50 tracking-widest uppercase">BANDWIDTH: 4.8MB/S • <span class="text-emerald-500 font-black">SECURE</span></span>
+                                 <span class="font-mono text-[10px] text-white/50 tracking-widest uppercase">LATENCY: 14MS</span>
+                            </div>
+
+                            <div class="absolute bottom-4 right-4 z-20 font-mono text-xs font-black text-white/70 bg-black/60 px-3 py-1.5 rounded-lg backdrop-blur-md border border-white/10 shadow-xl tracking-[0.2em]" id="vid-time-\${i}"></div>
+                             
+                            <!-- Scanning Laser Matrix -->
+                            <div class="absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-blue-500/10 to-transparent pointer-events-none z-10 animate-[slide_3s_ease-in-out_infinite_alternate]"></div>
+                            
+                            <!-- Crosshairs -->
+                            <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-32 h-32 border border-white/10 rounded-full z-10 pointer-events-none flex items-center justify-center">
+                                 <div class="w-2 h-2 bg-red-500/50 rounded-full"></div>
+                                 <div class="absolute inset-0 border-t border-white/10"></div>
+                                 <div class="absolute inset-0 border-l border-white/10"></div>
+                            </div>
+                        </div>\`;
+                }
+
+                // Attach WebRTC feed to cameras
+                navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                    for(let i=0; i<count; i++) {
+                        const v = document.getElementById('vid-'+i);
+                        if(v) v.srcObject = stream;
+                    }
+                }).catch(err => {
+                    console.warn("Camera access denied or unavailable", err);
+                    for(let i=0; i<count; i++) {
+                        const v = document.getElementById('vid-'+i);
+                        if(v) {
+                            v.outerHTML = \`<div class="text-slate-500/50 font-mono text-sm flex flex-col items-center gap-4 bg-slate-900 w-full h-full justify-center p-8 text-center border-2 border-rose-900/50 rounded-2xl">
+                                  <svg class="w-16 h-16 opacity-30 text-rose-500 mb-2 drop-shadow-[0_0_15px_rgba(225,29,72,0.8)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 5.636a9 9 0 010 12.728m0 0l-2.829-2.829m2.829 2.829L21 21M15.536 8.464a5 5 0 010 7.072m0 0l-2.829-2.829m-4.243 2.829a4.978 4.978 0 01-1.414-2.83m-1.414 5.658a9 9 0 01-2.167-9.238L5.636 5.636m12.728 12.728L5.636 5.636"></path></svg> 
+                                  <div class="uppercase tracking-[0.3em] font-black text-white/50 bg-black/50 px-4 py-2 rounded">HARDWARE LINK SEVERED</div>
+                                  <div class="text-[10px] uppercase text-rose-500/80 font-bold bg-rose-950/50 px-3 py-1 rounded">AUTHORIZATION FAILED OR NO CAMERA DETECTED AT NODE [ \${session.loc} ]</div>
+                            </div>\`;
+                        }
+                    }
+                });
+
+                // Update overlay clocks
+                setInterval(() => {
+                    const now = new Date().toISOString().replace('T', ' ').substr(0,19);
+                    for(let i=0; i<count; i++) {
+                        const el = document.getElementById('vid-time-'+i);
+                        if(el) el.innerText = now;
+                    }
+                }, 1000);
+            };
+
+            toggleCamGrid(4);
+        }
+
+        async function loadBulkUpdate() {
+            const items = (await getDocs(collection(db, "items"))).docs;
+            const cats = [...new Set(items.map(i => i.data().category || 'General'))];
+            
+            document.getElementById('app').innerHTML = `
+                <div class="max-w-3xl mx-auto card p-8">
+                    <h3 class="font-black text-2xl mb-2 text-slate-800">Bulk Category/Min-Level Update</h3>
+                    <p class="text-slate-400 text-sm mb-6">Change settings for multiple items at once.</p>
+                    
+                    <div class="grid gap-6">
+                        <div class="p-4 bg-slate-50 rounded-xl border border-slate-200">
+                            <label class="block font-bold text-xs uppercase text-slate-400 mb-2">1. Select Target Category</label>
+                            <select id="bulk-cat-from" class="w-full p-3 border rounded-lg bg-white font-bold">
+                                ${cats.map(c => `<option>${c}</option>`).join('')}
+                            </select>
+                        </div>
+                        
+                        <div class="p-4 bg-blue-50 rounded-xl border border-blue-100">
+                            <label class="block font-bold text-xs uppercase text-slate-400 mb-3 underline decoration-blue-200">2. New Values to Apply</label>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div><label class="block text-[10px] font-bold text-blue-400 mb-1 uppercase">New Category</label><input id="bulk-cat-to" placeholder="Leave empty for no change" class="w-full p-2 border rounded"></div>
+                                <div><label class="block text-[10px] font-bold text-blue-400 mb-1 uppercase">New Min-Level</label><input id="bulk-min" type="number" placeholder="Leave empty for no change" class="w-full p-2 border rounded"></div>
+                            </div>
+                        </div>
+
+                        <button onclick="applyBulkUpdate()" class="bg-black text-white p-4 rounded-xl font-black uppercase tracking-widest hover:bg-slate-800 transition shadow-xl">Apply Changes Globally</button>
+                    </div>
+                </div>`;
+        }
+
+        window.applyBulkUpdate = async () => {
+            const fromCat = document.getElementById('bulk-cat-from').value;
+            const toCat = document.getElementById('bulk-cat-to').value.trim();
+            const min = document.getElementById('bulk-min').value;
+
+            if(!toCat && !min) return alert("Enter at least one value to change");
+
+            confirmAction(`Update ALL items in ${fromCat}?`, 'execBulkUpdate', fromCat, toCat, min);
+        };
+
+        window.execBulkUpdate = async (from, to, min) => {
+            const q = query(collection(db, "items"), where("category", "==", from));
+            const snap = await getDocs(q);
+            const batch = writeBatch(db);
+            
+            snap.forEach(d => {
+                const upd = {};
+                if(to) upd.category = to;
+                if(min) upd.minLevel = parseFloat(min);
+                batch.update(d.ref, upd);
+            });
+
+            await batch.commit();
+            alert(`Updated ${snap.size} items!`);
+            loadBulkUpdate();
+        };
+
+        // --- SYSTEM SETTINGS (Backup/Restore) ---
+        async function loadSettings() {
+            document.getElementById('app').innerHTML = `
+                <div class="max-w-4xl mx-auto space-y-6">
+                    <div class="card p-8 bg-white border border-slate-200 shadow-xl relative overflow-hidden">
+                        <div class="absolute top-0 right-0 p-8 opacity-5"><svg class="w-32 h-32" fill="currentColor" viewBox="0 0 24 24"><path d="M12 15V3m0 12l-4-4m4 4l4-4M2 17l.621 2.485A2 2 0 004.561 21h14.878a2 2 0 001.94-1.515L22 17"></path></svg></div>
+                        <h3 class="font-black text-2xl text-slate-800 mb-2 uppercase">System Utilities</h3>
+                        <p class="text-slate-500 text-sm mb-8">Advanced maintenance and data management tools.</p>
+                        
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div class="p-6 bg-blue-50 rounded-2xl border border-blue-100 group hover:border-blue-300 transition-colors">
+                                <div class="w-12 h-12 bg-white rounded-xl shadow-sm flex items-center justify-center text-2xl mb-4">💾</div>
+                                <h4 class="font-bold text-slate-800 mb-1">Backup Database</h4>
+                                <p class="text-xs text-slate-500 mb-4">Export all master data (Items, Locations, Suppliers) to a JSON file.</p>
+                                <button onclick="backupSystem()" class="w-full bg-blue-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-blue-200 hover:scale-[1.02] transition">Download Backup</button>
+                            </div>
+
+                            <div class="p-6 bg-amber-50 rounded-2xl border border-amber-100 group hover:border-amber-300 transition-colors">
+                                <div class="w-12 h-12 bg-white rounded-xl shadow-sm flex items-center justify-center text-2xl mb-4">📤</div>
+                                <h4 class="font-bold text-slate-800 mb-1">Restore Database</h4>
+                                <p class="text-xs text-slate-500 mb-4">Import data from a previous backup file. Warning: This may overwrite existing codes.</p>
+                                <label class="block">
+                                    <span class="sr-only">Choose File</span>
+                                    <input type="file" id="restore-file" onchange="restoreSystem(this)" class="block w-full text-xs text-slate-500 file:mr-4 file:py-3 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-black file:bg-amber-100 file:text-amber-700 hover:file:bg-amber-200 cursor-pointer"/>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        window.backupSystem = async () => {
+            const data = {
+                items: (await getDocs(collection(db, "items"))).docs.map(d => d.data()),
+                locations: (await getDocs(collection(db, "locations"))).docs.map(d => d.data()),
+                suppliers: (await getDocs(collection(db, "suppliers"))).docs.map(d => d.data())
+            };
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `IMS_Backup_${new Date().toISOString().split('T')[0]}.json`;
+            a.click();
+        };
+
+        window.restoreSystem = async (input) => {
+            const file = input.files[0];
+            if(!file) return;
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                const data = JSON.parse(e.target.result);
+                if(confirm(`Restore ${data.items?.length || 0} items?`)) {
+                    const batch = writeBatch(db);
+                    // This is a simplified restore - in prod you'd check for duplicates
+                    for(let i of (data.items || [])) {
+                        const ref = doc(collection(db, "items"));
+                        batch.set(ref, i);
+                    }
+                    await batch.commit();
+                    alert("System Restored!");
+                    loadSettings();
+                }
+            };
+            reader.readAsText(file);
+        };
+
+        // ===================================
+
+        // Start
+        initNav();
+        setInterval(() => document.getElementById('clock').innerText = new Date().toLocaleTimeString(), 1000);
+
+    
