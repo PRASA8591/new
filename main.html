@@ -344,11 +344,23 @@
 
         // --- ID GENERATOR ---
         async function generateID(prefix, col) {
-            // Simple counter based ID - in production use distributed counters or uuids
-            // Here we just count docs to keep it simple as requested (ITEM000001)
-            const snap = await getDocs(collection(db, col));
-            const count = snap.size + 1;
-            return prefix + count.toString().padStart(6, '0');
+            if (col !== 'docs') {
+                const snap = await getDocs(collection(db, col));
+                const count = snap.size + 1;
+                return prefix + count.toString().padStart(6, '0');
+            }
+
+            const ref = doc(db, "settings", "counters");
+            const snap = await getDoc(ref);
+            let counters = snap.exists() ? snap.data() : {};
+            
+            let current = counters[prefix] || 0;
+            current++;
+            
+            counters[prefix] = current;
+            await setDoc(ref, counters, { merge: true });
+            
+            return prefix + current.toString().padStart(6, '0');
         }
 
         // --- HISTORY LOGGER ---
@@ -4371,7 +4383,7 @@ window.viewOldPOByNo = async () => {
                         <h3 class="font-black text-2xl text-slate-800 mb-2 uppercase">System Utilities</h3>
                         <p class="text-slate-500 text-sm mb-8">Advanced maintenance and data management tools.</p>
                         
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                             <div class="p-6 bg-blue-50 rounded-2xl border border-blue-100 group hover:border-blue-300 transition-colors">
                                 <div class="w-12 h-12 bg-white rounded-xl shadow-sm flex items-center justify-center text-2xl mb-4">💾</div>
                                 <h4 class="font-bold text-slate-800 mb-1">Backup Database</h4>
@@ -4389,9 +4401,79 @@ window.viewOldPOByNo = async () => {
                                 </label>
                             </div>
                         </div>
+                        
+                        <div class="border-t border-slate-200 pt-6 mt-6">
+                            <h4 class="font-black text-sm text-slate-400 mb-4 uppercase tracking-[0.2em]">Administrative Data Reset Tools</h4>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div class="p-6 bg-indigo-50 rounded-2xl border border-indigo-100 group hover:border-indigo-300 transition-colors">
+                                    <div class="w-12 h-12 bg-white rounded-xl shadow-sm flex items-center justify-center text-2xl mb-4">🔢</div>
+                                    <h4 class="font-bold text-slate-800 mb-1">Sequence Number Adjustment</h4>
+                                    <p class="text-xs text-slate-500 mb-4">Modify the starting sequences for future transactional identifiers.</p>
+                                    <button onclick="adjustSequences()" class="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-indigo-200 hover:scale-[1.02] transition">Edit Sequences</button>
+                                </div>
+                                <div class="p-6 bg-red-50 rounded-2xl border border-red-100 group hover:border-red-300 transition-colors">
+                                    <div class="w-12 h-12 bg-white rounded-xl shadow-sm flex items-center justify-center text-2xl mb-4">🚨</div>
+                                    <h4 class="font-bold text-slate-800 mb-1">Transaction Purge Protocol</h4>
+                                    <p class="text-xs text-slate-500 mb-4">Permanently delete ALL saved transactions and reset logic structure.</p>
+                                    <button onclick="purgeTransactions()" class="w-full bg-red-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-red-200 hover:scale-[1.02] transition">Purge Transactions</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>`;
         }
+
+        window.adjustSequences = async () => {
+            const ref = doc(db, "settings", "counters");
+            const snap = await getDoc(ref);
+            let c = snap.exists() ? snap.data() : { PO: 0, GRN: 0, PRN: 0, "TR-OUT": 0, BILL: 0 };
+            
+            openModal("Adjust Sequence Alignments", `
+                <div class="grid gap-4 custom-scrollbar overflow-auto max-h-[60vh] pr-2">
+                    <p class="text-xs text-slate-500 mb-2 leading-relaxed">Adjust the underlying base number prefix integers. The next document recorded will automatically be this number plus one (e.g., Setting 0 means the next transaction is 1).</p>
+                    <label class="font-bold text-xs uppercase text-slate-400">P.O Sequence (Currently: ${c.PO||0})</label><input id="seq-po" value="${c.PO||0}" type="number" class="p-3 border rounded-xl w-full font-black text-slate-700 bg-slate-50">
+                    <label class="font-bold text-xs uppercase text-slate-400">G.R.N Sequence (Currently: ${c.GRN||0})</label><input id="seq-grn" value="${c.GRN||0}" type="number" class="p-3 border rounded-xl w-full font-black text-slate-700 bg-slate-50">
+                    <label class="font-bold text-xs uppercase text-slate-400">Return (PRN) Sequence (Currently: ${c.PRN||0})</label><input id="seq-prn" value="${c.PRN||0}" type="number" class="p-3 border rounded-xl w-full font-black text-slate-700 bg-slate-50">
+                    <label class="font-bold text-xs uppercase text-slate-400">Transfer Out Sequence (Currently: ${c["TR-OUT"]||0})</label><input id="seq-tr" value="${c["TR-OUT"]||0}" type="number" class="p-3 border rounded-xl w-full font-black text-slate-700 bg-slate-50">
+                    <label class="font-bold text-xs uppercase text-slate-400">Bill/POS Sequence (Currently: ${c.BILL||0})</label><input id="seq-bill" value="${c.BILL||0}" type="number" class="p-3 border rounded-xl w-full font-black text-slate-700 bg-slate-50">
+                </div>
+            `, `<button onclick="saveSequences()" class="bg-indigo-600 shadow-xl shadow-indigo-200 text-white px-6 py-3 rounded-xl font-bold uppercase tracking-widest text-xs hover:bg-indigo-700 w-full transition">Lock Sequence Settings</button>`);
+        };
+        
+        window.saveSequences = async () => {
+            await setDoc(doc(db, "settings", "counters"), {
+                PO: parseInt(document.getElementById('seq-po').value)||0,
+                GRN: parseInt(document.getElementById('seq-grn').value)||0,
+                PRN: parseInt(document.getElementById('seq-prn').value)||0,
+                "TR-OUT": parseInt(document.getElementById('seq-tr').value)||0,
+                BILL: parseInt(document.getElementById('seq-bill').value)||0
+            }, { merge: true });
+            alert("Sequences Successfully Adjusted!");
+            closeModal();
+            loadSettings();
+        };
+
+        window.purgeTransactions = async () => {
+            const pwd = prompt("⚠️ WARNING! ⚠️\\n\\nThis will permanently delete ALL active transactional data (Purchase Orders, GRNs, Transfers, Return Notes, Bills) and their historical logs.\\n\\nMaster Data like Items, Locations, and Suppliers will NOT be touched.\\n\\nType exactly 'CONFIRM' to execute purge:");
+            if (pwd !== 'CONFIRM') return alert("Purge Protocol Aborted.");
+            
+            try {
+                // Wipe docs
+                const dSnap = await getDocs(collection(db, "docs"));
+                let batch = writeBatch(db);
+                let ct = 0;
+                for (let d of dSnap.docs) { batch.delete(d.ref); ct++; if(ct%400===0){ await batch.commit(); batch = writeBatch(db); } }
+                await batch.commit();
+
+                // Wipe history
+                const hSnap = await getDocs(collection(db, "history"));
+                batch = writeBatch(db);
+                for (let h of hSnap.docs) { batch.delete(h.ref); ct++; if(ct%400===0){ await batch.commit(); batch = writeBatch(db); } }
+                await batch.commit();
+
+                alert("Purge Verified and Complete.\\nTotal Transaction & History Records Vaporized: " + ct);
+            } catch (e) { alert("Error purging records: " + e.message); }
+        };
 
         window.backupSystem = async () => {
             const data = {
